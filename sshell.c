@@ -50,10 +50,10 @@ enum {
 struct commandline {
     char command[MAX_CMD];		/* the whole command line */
     char *args[MAX_ARGS];		/* arguments of the command line */
-    int input_redirection;		/* 1 for input redirection, 0 for not input redirection */
-    int output_redirection;		/* 1 for input redirection, 0 for not input redirection */
-    char input_file[MAX_CMD];		/* the name of the input file */
-    char output_file[MAX_CMD];		/* the name of the output file */
+    int num_input;			/* number of input redirection */
+    int num_output;			/* number of output redirection */
+    char input_file[MAX_ARGS][MAX_CMD];	/* the array of the input files */
+    char output_file[MAX_ARGS][MAX_CMD];/* the array of the output files */
     int num_args;			/* number of arguments in the command line */
 };
 
@@ -68,8 +68,8 @@ int is_valid_command(const struct commandline cmd);
 int is_builtin_command(const struct commandline cmd);
 int cd(const char *dir);
 int pwd();
-void redirection(int mode, const char *file);
-int check_redirection_file(int mode, const char *file);
+void redirection(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files);
+int check_redirection_file(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files);
 void error_message(int error_code);
 
 /*************************************************************
@@ -85,8 +85,11 @@ void error_message(int error_code);
  * @return - none
  */
 void split_array(char *array, char *first, char *second, const char *delim) {
-    strcpy(first, strtok(array, delim));
-    strcpy(second, array + strlen(first) + 1);
+    char *token = strtok(array, delim);
+    if(token != NULL) {
+        strcpy(first, token);
+        strcpy(second, array + strlen(first) + 1);
+    }
     return;
 }
 
@@ -96,49 +99,76 @@ void split_array(char *array, char *first, char *second, const char *delim) {
  * @return - none
  */
 void read_command(struct commandline *cmd) {
-    char *arg;
+    char *arg, *token;
     char command[MAX_CMD];
     char program[MAX_CMD];
     char input_field[MAX_CMD];
     char output_field[MAX_CMD];
-    char copy[MAX_CMD];
-    char buffer[MAX_CMD];
 
     fgets(command, MAX_CMD, stdin);		/* get the argument list for the command */
     command[strlen(command) - 1] = 0;		/* get rid of newline */
     cmd->num_args = 0;				/* initialize number of argument to zero */
     strcpy(cmd->command, command);		/* store command line */
-    strcpy(copy, command);			/* need an extra copy for strtok to work */
-    
+   
     /* check if the command line has input redirection and output redirection*/
-    cmd->input_redirection = strchr(command, '<') ? 1 : 0;
-    cmd->output_redirection = strchr(command, '>') ? 1 : 0;
+    cmd->num_input = strchr(command, '<') ? 1 : 0;
+    cmd->num_output = strchr(command, '>') ? 1 : 0;
 
     /* divide the command line into two parts with input redirection as the delimiter */
     split_array(command, program, input_field, "<");
      
     /* divide the rest of the command line into two parts with output redirection as the delimiter */
-    if(cmd->input_redirection == 1) {		/* input and output redirection at the same time */
-        split_array(copy, buffer, output_field, ">");
+    if(cmd->num_input > 0) {		/* input and output redirection at the same time */
+        split_array(input_field, input_field, output_field, ">");
     } else {					/* only output redirection */
-        split_array(copy, program, output_field, ">");
+        split_array(command, program, output_field, ">");
     }
 
-    /* get the input file */
-    arg = strtok(input_field, " ");
-    if(arg != NULL) {
-        strcpy(cmd->input_file, arg);
-    } else {
-	strcpy(cmd->input_file, " ");		/* use empty string to indicate not given file */   
-    }
-
+    /* get the input files */
+    do {
+	arg = strchr(input_field, '<');		/* get the next segment of input redirection */
+	if(arg != NULL) {
+	    memcpy(cmd->input_file[cmd->num_input], input_field, arg - input_field);
+	    token = strtok(cmd->input_file[cmd->num_input], " ");		/* clear white spaces */
+	    if(token != NULL) {
+	        strcpy(cmd->input_file[cmd->num_input - 1], token);
+	    } else {
+                strcpy(cmd->input_file[cmd->num_input - 1], " ");		/* file not given */
+	    }
+	    cmd->num_input++;
+	    strcpy(input_field, arg + 1);	/* updat the newest segment for input redirection */
+	} else {				/* the last input file */
+            token = strtok(input_field, " "); 		/* clear white spaces */
+            if(token != NULL) {
+                strcpy(cmd->input_file[cmd->num_input - 1], token);
+            } else {
+                strcpy(cmd->input_file[cmd->num_input - 1], " ");		/* file not given */
+            }
+	}
+    } while(arg != NULL);
+  
     /* get the output file */
-    arg = strtok(output_field, " ");
-    if(arg != NULL) {
-        strcpy(cmd->output_file, arg);
-    } else {
-        strcpy(cmd->output_file, " ");          /* use empty string to indicate not given file */
-    }
+    do {
+        arg = strchr(output_field, '>');         /* get the next segment of input redirection */
+        if(arg != NULL) {
+            memcpy(cmd->output_file[cmd->num_output], output_field, arg - output_field);
+	    token = strtok(cmd->output_file[cmd->num_output], " ");		/* clear white spaces */ 
+            if(token != NULL) {
+                strcpy(cmd->output_file[cmd->num_output - 1], token);
+            } else {
+                strcpy(cmd->output_file[cmd->num_output - 1], " ");         	/* file not given */
+            }
+	    cmd->num_output++;
+            strcpy(output_field, arg + 1);       /* updat the newest segment for output redirection */
+        } else {                                /* the last output file */
+            token = strtok(output_field, " ");           /* clear white spaces */
+            if(token != NULL) {
+                strcpy(cmd->output_file[cmd->num_output - 1], token);
+            } else {
+                strcpy(cmd->output_file[cmd->num_output - 1], " "); 		/* file not given */
+            }
+        }
+    } while(arg != NULL);
  
     /* separte program into arguments */
     arg = strtok(program, " ");			/* get the first token */    
@@ -226,44 +256,51 @@ int pwd() {
 /*
  * This function handles the input/output redirection and connects according std
  * @param - {int} - indicates if it is for input redirection or output redirection
- *        - {char *} - the name of the file
+ *        - {char *[]} - the array of files
+ *        - {int} - number of files
  * @return - none
  */
-void redirection(int mode, const char *file) {
-    int fd;
-    if(mode == INPUT) {			
-        fd = open(file, O_RDONLY);
-        dup2(fd, STDIN_FILENO);         /* input redirection */
-    } else {	
-	fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); /* create the file if not exist */
-	dup2(fd, STDOUT_FILENO);	/* output redirection */
+void redirection(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files) {
+    int fd, i;
+    for(i = 0; i < num_files; i++) {
+        if(mode == INPUT) {			
+            fd = open(files[i], O_RDONLY);
+            dup2(fd, STDIN_FILENO);         	/* input redirection */
+        } else {	
+	    fd = open(files[i], O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); /* create the file if not exist */
+	    dup2(fd, STDOUT_FILENO);		/* output redirection */
+        }
+        close(fd);				/* close unused file */
     }
-    close(fd);				/* close unused file */
     return;
 }
 
 /*
  * This function checks if the input/output file can be opened and if it is given
  * @param - {int} - indicates if it is for input redirection or output redirection
- *        - {char *} - the name of the file
+ *        - {char *[]} - the array of files
+ *        - {int} - number of files
  * @return - error code
  */
-int check_redirection_file(int mode, const char *file) {
-    /* check if the file name is given */
-    if(strcmp(file, " ") == 0) {
-        return mode == INPUT ? ERR_NO_INPUTFILE : ERR_NO_OUTPUTFILE;
-    }
+int check_redirection_file(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files) {
+    int i;
+    for(i = 0; i < num_files; i++) {
+        /* check if the file name is given */
+        if(strcmp(files[i], " ") == 0) {
+            return mode == INPUT ? ERR_NO_INPUTFILE : ERR_NO_OUTPUTFILE;
+        }
     
-    /* check if the file can be opened */
-    if(mode == INPUT) {				/* input redirection */
-        if(open(file, O_RDONLY) < 0) {		/* error opening file for reading */
-            return ERR_OPEN_INPUTFILE;
-	}
-    } else {					/* output redirection */
-	/* file exists but file doesn't allow access */
-        if(access(file, F_OK) == 0 && access(file, W_OK) < 0) {
-            return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
-	}
+        /* check if the file can be opened */
+        if(mode == INPUT) {		/* input redirection */
+            if(open(files[i], O_RDONLY) < 0) {		/* error opening file for reading */
+                return ERR_OPEN_INPUTFILE;
+	    }
+        } else {					/* output redirection */
+	    /* file exists but file doesn't allow access */
+            if(access(files[i], F_OK) == 0 && access(files[i], W_OK) < 0) {
+                return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
+	    }
+        }
     }
     return SUCCESS;
 }
@@ -347,9 +384,9 @@ int main(int argc, char *argv[])
 	}
 
 	/* check if it has input redirection */
-        if(cmd.input_redirection == 1) {
+        if(cmd.num_input > 0) {
 	    /* check if it has errors */
-	    int error_code = check_redirection_file(INPUT, cmd.input_file);
+	    int error_code = check_redirection_file(INPUT, cmd.input_file, cmd.num_input);
 	    if(error_code != SUCCESS) {
                 error_message(error_code);
 		continue;
@@ -357,9 +394,9 @@ int main(int argc, char *argv[])
 	}
 
 	/* check if it has output redirection */
-        if(cmd.output_redirection == 1) {
+        if(cmd.num_output < 0) {
             /* check if it has errors */
-            int error_code = check_redirection_file(OUTPUT, cmd.output_file);
+            int error_code = check_redirection_file(OUTPUT, cmd.output_file, cmd.num_output);
             if(error_code != SUCCESS) {
                 error_message(error_code);
                 continue;
@@ -370,13 +407,13 @@ int main(int argc, char *argv[])
 	pid = fork();			/* fork child process */
 	if(pid == 0) {			/* Child */
             /* perform input redirection */
-	    if(cmd.input_redirection == 1) {
-                redirection(INPUT, cmd.input_file);
+	    if(cmd.num_input > 0) {
+                redirection(INPUT, cmd.input_file, cmd.num_input);
             } 
 	    
 	    /* perform output redirection */
-	    if(cmd.output_redirection == 1) {
-                redirection(OUTPUT, cmd.output_file);
+	    if(cmd.num_output > 0) {
+                redirection(OUTPUT, cmd.output_file, cmd.num_output);
 	    }
 
 	    execvp(cmd.args[0], cmd.args);		
