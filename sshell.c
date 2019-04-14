@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h> 
 #include <sys/wait.h>
+#include <fcntl.h>
 
 /*************************************************************
  *                    MACRO DEFINITIONS                      *
@@ -15,8 +16,15 @@
  *                    STRUCT and ENUM DEFINITIONS             *
  *************************************************************/
 
+/* redirection code */
+enum {
+    INPUT,
+    OUTPUT
+}; 
+
 /* error code enum */
 enum {
+    SUCCESS,
     ERR_INVALID_CMDLINE,
     ERR_CMD_NOTFOUND,
     ERR_DIR_NOTFOUND,
@@ -42,6 +50,10 @@ enum {
 struct commandline {
     char command[MAX_CMD];		/* the whole command line */
     char *args[MAX_ARGS];		/* arguments of the command line */
+    int input_redirection;		/* 1 for input redirection, 0 for not input redirection */
+    int output_redirection;		/* 1 for input redirection, 0 for not input redirection */
+    char input_file[MAX_CMD];		/* the name of the input file */
+    char output_file[MAX_CMD];		/* the name of the output file */
     int num_args;			/* number of arguments in the command line */
 };
 
@@ -55,6 +67,8 @@ int is_valid_command(const struct commandline cmd);
 int is_builtin_command(const struct commandline cmd);
 int cd(const char *dir);
 int pwd();
+void redirection(int mode, const char *file);
+int check_redirection_file(int mode, const char *file);
 void error_message(int error_code);
 
 /*************************************************************
@@ -69,21 +83,38 @@ void error_message(int error_code);
 void read_command(struct commandline *cmd) {
     char *arg;
     char command[MAX_CMD];
+    char program[MAX_CMD];
 
     fgets(command, MAX_CMD, stdin);		/* get the argument list for the command */
     command[strlen(command) - 1] = 0;		/* get rid of newline */
     cmd->num_args = 0;				/* initialize number of argument to zero */
     strcpy(cmd->command, command);		/* save command line */
 
-    /* separte commandline into arguments) */
-    arg = strtok(command, " ");			/* get the first token */
-	
+    /* check if the command line has input redirection and output redirection*/
+    cmd->input_redirection = strchr(command, '<') ? 1 : 0;
+    cmd->output_redirection = strchr(command, '>') ? 1 : 0;
+
+    /* divide the command line into two parts with input redirection as the delimiter */
+    strtok(command, "<");
+
+    /* copy the program part before the input redirection */
+    strcpy(program, command);
+
+    /* get the input file */
+    arg = strtok(NULL, " ");
+    if(arg != NULL) 
+        strcpy(cmd->input_file, arg);
+
+    /* separte program into arguments */
+    arg = strtok(program, " ");			/* get the first token */    
+
     /* find the number of arguments and copy arugments to command*/
     while(arg != NULL) {			/* parse the command */
         cmd->args[cmd->num_args] = (char *) malloc((strlen(arg) + 1) * sizeof(char));
 	strcpy(cmd->args[(cmd->num_args)++], arg); 	/* copy the argument */
 	arg = strtok(NULL, " ");		/* get next argument */
     }
+    
     cmd->args[cmd->num_args] = NULL;		/* set null terminator */
     return;
 }
@@ -100,7 +131,7 @@ void free_command(struct commandline *cmd) {
     }
 }
 
-/*
+/* TO DO !!!
  * This function check if the command line is valid
  * @param - {const struct} - the command line struct
  * @return - {int} - error code
@@ -157,6 +188,42 @@ int pwd() {
 }
 
 /*
+ * This function handles the input/output redirection and connects according std
+ * @param - {int} - indicates if it is for input redirection or output redirection
+ *        - {char *} - the name of the file
+ * @return - none
+ */
+void redirection(int mode, const char *file) {
+    int fd;
+    if(mode == INPUT) {
+        fd = open(file, O_RDONLY);
+        dup2(fd, STDIN_FILENO);         /* replace stdin with the file for reading */
+    }
+    close(fd);				/* close unused file */
+}
+
+/*
+ * This function checks if the input/output file can be opened and if it is given
+ * @param - {int} - indicates if it is for input redirection or output redirection
+ *        - {char *} - the name of the file
+ * @return - error code
+ */
+int check_redirection_file(int mode, const char *file) {
+    /* check if the file name is given */
+    if(!file) {
+        return mode == INPUT ? ERR_NO_INPUTFILE : ERR_NO_OUTPUTFILE;
+    }
+
+    /* check if the file can be opened */
+    if(mode == INPUT) {
+        if(open(file, O_RDONLY) < 0) {		/* error opening file for reading */
+            return ERR_OPEN_INPUTFILE;
+	}
+    }
+    return SUCCESS;
+}
+
+/*
  * This function prints out according error mesage depending on error code
  * @param - {int} - error code enum
  * @return - none
@@ -170,7 +237,7 @@ void error_message(int error_code) {
 	    fprintf(stderr, "Error: command not found\n");
             break;
 	case(ERR_DIR_NOTFOUND):
-            fprintf(stderr, "no such directory\n");
+            fprintf(stderr, "Error: no such directory\n");
 	    break;
 	case(ERR_OPEN_INPUTFILE):
             fprintf(stderr, "Error: cannot open input file\n");
@@ -234,24 +301,37 @@ int main(int argc, char *argv[])
             continue;
 	}
 
+	/* check if it has input redirection */
+        if(cmd.input_redirection == 1) {
+	    /* check if it has errors */
+	    int error_code = check_redirection_file(INPUT, cmd.input_file);
+	    if(error_code != SUCCESS) {
+                error_message(error_code);
+		continue;
+            }
+	}
+
 	/* run not-built-in command */
 	pid = fork();			/* fork child process */
-	if(pid == 0) {
-	    /* Child */
+	if(pid == 0) {			/* Child */
+            /* perform input redirection */
+	    if(cmd.input_redirection == 1) {
+                redirection(INPUT, cmd.input_file);
+            }
+
 	    execvp(cmd.args[0], cmd.args);		
 	    /* execvp error */
 	    error_message(ERR_CMD_NOTFOUND);
 	    exit(EXIT_FAILURE);
-	} else if(pid > 0) {
-	    /* Parent */
+	} else if(pid > 0) {		/* Parent */
 	    waitpid(-1, &status, 0);		/* wait for child to complete */
 	    /* Information message after execution */
 	    fprintf(stderr, "+ completed '%s' [%d]\n", cmd.command, WEXITSTATUS(status));
-	} else {
-	    perror("fork");			/* fork error */
+	} else {			/* fork error */
+	    perror("fork");	
 	    exit(EXIT_FAILURE);
 	}
-	free_command(&cmd);			/* free the memory allocated for the command line */
+	free_command(&cmd);		/* free the memory allocated for the command line */
     }
     return EXIT_SUCCESS;
 }
