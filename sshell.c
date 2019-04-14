@@ -61,6 +61,7 @@ struct commandline {
  *                    LOCAL FUNCTION PROTOTYPES              *
  *************************************************************/
 
+void split_array(char *array, char *first, char *second, const char *delim);
 void read_command(struct commandline *cmd);
 void free_command(struct commandline *cmd);
 int is_valid_command(const struct commandline cmd);
@@ -76,6 +77,20 @@ void error_message(int error_code);
  *************************************************************/
 
 /*
+ * This function splits an array into two parts according to delimiter
+ * @param - {char *} - the array to split
+ *        - {char *} - store the first part of the array before delimiter
+ *        - {char *} - store the second part of the array after delimiter
+ *        - {const char *} - the delimiter 
+ * @return - none
+ */
+void split_array(char *array, char *first, char *second, const char *delim) {
+    strcpy(first, strtok(array, delim));
+    strcpy(second, array + strlen(first) + 1);
+    return;
+}
+
+/*
  * This function reads the command from terminal
  * @param - {struct *} - the command line struct
  * @return - none
@@ -84,27 +99,47 @@ void read_command(struct commandline *cmd) {
     char *arg;
     char command[MAX_CMD];
     char program[MAX_CMD];
+    char input_field[MAX_CMD];
+    char output_field[MAX_CMD];
+    char copy[MAX_CMD];
+    char buffer[MAX_CMD];
 
     fgets(command, MAX_CMD, stdin);		/* get the argument list for the command */
     command[strlen(command) - 1] = 0;		/* get rid of newline */
     cmd->num_args = 0;				/* initialize number of argument to zero */
-    strcpy(cmd->command, command);		/* save command line */
-
+    strcpy(cmd->command, command);		/* store command line */
+    strcpy(copy, command);			/* need an extra copy for strtok to work */
+    
     /* check if the command line has input redirection and output redirection*/
     cmd->input_redirection = strchr(command, '<') ? 1 : 0;
     cmd->output_redirection = strchr(command, '>') ? 1 : 0;
 
     /* divide the command line into two parts with input redirection as the delimiter */
-    strtok(command, "<");
-
-    /* copy the program part before the input redirection */
-    strcpy(program, command);
+    split_array(command, program, input_field, "<");
+     
+    /* divide the rest of the command line into two parts with output redirection as the delimiter */
+    if(cmd->input_redirection == 1) {		/* input and output redirection at the same time */
+        split_array(copy, buffer, output_field, ">");
+    } else {					/* only output redirection */
+        split_array(copy, program, output_field, ">");
+    }
 
     /* get the input file */
-    arg = strtok(NULL, " ");
-    if(arg != NULL) 
+    arg = strtok(input_field, " ");
+    if(arg != NULL) {
         strcpy(cmd->input_file, arg);
+    } else {
+	strcpy(cmd->input_file, " ");		/* use empty string to indicate not given file */   
+    }
 
+    /* get the output file */
+    arg = strtok(output_field, " ");
+    if(arg != NULL) {
+        strcpy(cmd->output_file, arg);
+    } else {
+        strcpy(cmd->output_file, " ");          /* use empty string to indicate not given file */
+    }
+ 
     /* separte program into arguments */
     arg = strtok(program, " ");			/* get the first token */    
 
@@ -129,6 +164,7 @@ void free_command(struct commandline *cmd) {
     for(i = 0; i < (cmd->num_args); i++) {
         free(cmd->args[i]);			/* free the allocated memory for each argument */
     }
+    return;
 }
 
 /* TO DO !!!
@@ -195,11 +231,15 @@ int pwd() {
  */
 void redirection(int mode, const char *file) {
     int fd;
-    if(mode == INPUT) {
+    if(mode == INPUT) {			
         fd = open(file, O_RDONLY);
-        dup2(fd, STDIN_FILENO);         /* replace stdin with the file for reading */
+        dup2(fd, STDIN_FILENO);         /* input redirection */
+    } else {	
+	fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); /* create the file if not exist */
+	dup2(fd, STDOUT_FILENO);	/* output redirection */
     }
     close(fd);				/* close unused file */
+    return;
 }
 
 /*
@@ -210,14 +250,19 @@ void redirection(int mode, const char *file) {
  */
 int check_redirection_file(int mode, const char *file) {
     /* check if the file name is given */
-    if(!file) {
+    if(strcmp(file, " ") == 0) {
         return mode == INPUT ? ERR_NO_INPUTFILE : ERR_NO_OUTPUTFILE;
     }
-
+    
     /* check if the file can be opened */
-    if(mode == INPUT) {
+    if(mode == INPUT) {				/* input redirection */
         if(open(file, O_RDONLY) < 0) {		/* error opening file for reading */
             return ERR_OPEN_INPUTFILE;
+	}
+    } else {					/* output redirection */
+	/* file exists but file doesn't allow access */
+        if(access(file, F_OK) == 0 && access(file, W_OK) < 0) {
+            return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
 	}
     }
     return SUCCESS;
@@ -311,13 +356,28 @@ int main(int argc, char *argv[])
             }
 	}
 
+	/* check if it has output redirection */
+        if(cmd.output_redirection == 1) {
+            /* check if it has errors */
+            int error_code = check_redirection_file(OUTPUT, cmd.output_file);
+            if(error_code != SUCCESS) {
+                error_message(error_code);
+                continue;
+            }
+        }
+
 	/* run not-built-in command */
 	pid = fork();			/* fork child process */
 	if(pid == 0) {			/* Child */
             /* perform input redirection */
 	    if(cmd.input_redirection == 1) {
                 redirection(INPUT, cmd.input_file);
-            }
+            } 
+	    
+	    /* perform output redirection */
+	    if(cmd.output_redirection == 1) {
+                redirection(OUTPUT, cmd.output_file);
+	    }
 
 	    execvp(cmd.args[0], cmd.args);		
 	    /* execvp error */
