@@ -9,6 +9,7 @@
  *                    MACRO DEFINITIONS                      *
  *************************************************************/
 
+#define MAX_CHAR 255
 #define MAX_CMD 512
 #define MAX_ARGS 16
 
@@ -18,6 +19,7 @@
 
 /* redirection code */
 enum {
+    ARGUMENT,
     INPUT,
     OUTPUT
 }; 
@@ -61,7 +63,7 @@ struct commandline {
  *                    LOCAL FUNCTION PROTOTYPES              *
  *************************************************************/
 
-void split_array(char *array, char *first, char *second, const char *delim);
+char find_closest_occurence(char *array, const char *delim);
 void read_command(struct commandline *cmd);
 void free_command(struct commandline *cmd);
 int is_valid_command(const struct commandline cmd);
@@ -77,20 +79,26 @@ void error_message(int error_code);
  *************************************************************/
 
 /*
- * This function splits an array into two parts according to delimiter
- * @param - {char *} - the array to split
- *        - {char *} - store the first part of the array before delimiter
- *        - {char *} - store the second part of the array after delimiter
- *        - {const char *} - the delimiter 
- * @return - none
+ * This function finds a character from delimiters that is the closest occurence in the array
+ * @param - {char *} - the array to find closest occurence of char in delimiters
+ *        - {const char *} - the array of delimiters to find occurence
+ *
+ * @return - the close occurence character in delim
  */
-void split_array(char *array, char *first, char *second, const char *delim) {
-    char *token = strtok(array, delim);
-    if(token != NULL) {
-        strcpy(first, token);
-        strcpy(second, array + strlen(first) + 1);
+char find_closest_occurence(char *array, const char *delim) {
+    int min = MAX_CMD;
+    char closest_occurence = MAX_CHAR;
+    int i;
+    char *token;
+    
+    for(i = 0; i < strlen(delim); i++) {
+	token = strchr(array, delim[i]);
+	if(token != NULL && (token - array) < min) {
+            min = token - array;	   /* update min value */
+	    closest_occurence = delim[i];  /* update closet occurence of char */
+	}	
     }
-    return;
+    return closest_occurence;
 }
 
 /*
@@ -99,85 +107,62 @@ void split_array(char *array, char *first, char *second, const char *delim) {
  * @return - none
  */
 void read_command(struct commandline *cmd) {
-    char *arg, *token;
-    char command[MAX_CMD];
-    char program[MAX_CMD];
-    char input_field[MAX_CMD];
-    char output_field[MAX_CMD];
+    char command[MAX_CMD], arg[MAX_CMD];
+    int num_white_space;
 
     fgets(command, MAX_CMD, stdin);		/* get the argument list for the command */
     command[strlen(command) - 1] = 0;		/* get rid of newline */
-    cmd->num_args = 0;				/* initialize number of argument to zero */
+    cmd->num_args = 0;				/* initialize number of arguments */
+    cmd->num_input = 0;				/* initialize number of input redirections */
+    cmd->num_output = 0;			/* initialize number of output redirections */
     strcpy(cmd->command, command);		/* store command line */
-   
-    /* check if the command line has input redirection and output redirection*/
-    cmd->num_input = strchr(command, '<') ? 1 : 0;
-    cmd->num_output = strchr(command, '>') ? 1 : 0;
+    
+    /* get rid of leading spaces */
+    for(num_white_space = 0; command[num_white_space] == ' '; num_white_space++);
+    strcpy(command, command + num_white_space);
 
-    /* divide the command line into two parts with input redirection as the delimiter */
-    split_array(command, program, input_field, "<");
-     
-    /* divide the rest of the command line into two parts with output redirection as the delimiter */
-    if(cmd->num_input > 0) {		/* input and output redirection at the same time */
-        split_array(input_field, input_field, output_field, ">");
-    } else {					/* only output redirection */
-        split_array(command, program, output_field, ">");
-    }
+    /* get rid of trailing spaces */
+    int i;
+    for(i = strlen(command) - 1; command[i] == ' '; i--)
+        command[i] = 0;
 
-    /* get the input files */
-    do {
-	arg = strchr(input_field, '<');		/* get the next segment of input redirection */
-	if(arg != NULL) {
-	    memcpy(cmd->input_file[cmd->num_input], input_field, arg - input_field);
-	    token = strtok(cmd->input_file[cmd->num_input], " ");		/* clear white spaces */
-	    if(token != NULL) {
-	        strcpy(cmd->input_file[cmd->num_input - 1], token);
-	    } else {
-                strcpy(cmd->input_file[cmd->num_input - 1], " ");		/* file not given */
-	    }
-	    cmd->num_input++;
-	    strcpy(input_field, arg + 1);	/* updat the newest segment for input redirection */
-	} else {				/* the last input file */
-            token = strtok(input_field, " "); 		/* clear white spaces */
-            if(token != NULL) {
-                strcpy(cmd->input_file[cmd->num_input - 1], token);
-            } else {
-                strcpy(cmd->input_file[cmd->num_input - 1], " ");		/* file not given */
-            }
+    /* parse the command line */
+    int read_code = ARGUMENT;
+    i = 0;
+    while(i < strlen(command)) {
+        memset(arg, 0, MAX_CMD);
+	int j = 0;
+	/* get the argument  */
+        while(command[i] != ' ' && command[i] != '<' && command[i] != '>' && command[i] != 0) {
+            arg[j++] = command[i++];
 	}
-    } while(arg != NULL);
-  
-    /* get the output file */
-    do {
-        arg = strchr(output_field, '>');         /* get the next segment of input redirection */
-        if(arg != NULL) {
-            memcpy(cmd->output_file[cmd->num_output], output_field, arg - output_field);
-	    token = strtok(cmd->output_file[cmd->num_output], " ");		/* clear white spaces */ 
-            if(token != NULL) {
-                strcpy(cmd->output_file[cmd->num_output - 1], token);
-            } else {
-                strcpy(cmd->output_file[cmd->num_output - 1], " ");         	/* file not given */
-            }
-	    cmd->num_output++;
-            strcpy(output_field, arg + 1);       /* updat the newest segment for output redirection */
-        } else {                                /* the last output file */
-            token = strtok(output_field, " ");           /* clear white spaces */
-            if(token != NULL) {
-                strcpy(cmd->output_file[cmd->num_output - 1], token);
-            } else {
-                strcpy(cmd->output_file[cmd->num_output - 1], " "); 		/* file not given */
-            }
-        }
-    } while(arg != NULL);
- 
-    /* separte program into arguments */
-    arg = strtok(program, " ");			/* get the first token */    
+        for(; command[i] == ' '; i++);		/* get rid of leading spaces */
+      
+	switch(read_code) {
+            case ARGUMENT:	/* an argument for the program */
+	        cmd->args[cmd->num_args] = (char *) malloc((strlen(arg) + 1));
+		strcpy(cmd->args[cmd->num_args++], arg);
+		break;
+	    case INPUT:		/* input file */
+		strcpy(cmd->input_file[cmd->num_input++], arg);
+		read_code = ARGUMENT;
+	        break;
+	    case OUTPUT:	/* output file */
+        	strcpy(cmd->output_file[cmd->num_output++], arg);
+		read_code = ARGUMENT;
+	        break;
+	}
 
-    /* find the number of arguments and copy arugments to command*/
-    while(arg != NULL) {			/* parse the command */
-        cmd->args[cmd->num_args] = (char *) malloc((strlen(arg) + 1) * sizeof(char));
-	strcpy(cmd->args[(cmd->num_args)++], arg); 	/* copy the argument */
-	arg = strtok(NULL, " ");		/* get next argument */
+	/* check for redirections */
+	if(command[i] == '<') { /* read input file for next argument */
+            read_code = INPUT;
+            i++;
+            for(; command[i] == ' '; i++);          /* get rid of leading spaces */
+        } else if(command[i] == '>') {  /* read output file for next argument */
+            read_code = OUTPUT;
+            i++;
+            for(; command[i] == ' '; i++);          /* get rid of leading spaces */
+        }
     }
     
     cmd->args[cmd->num_args] = NULL;		/* set null terminator */
