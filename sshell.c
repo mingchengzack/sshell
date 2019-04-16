@@ -7,10 +7,11 @@
 
 /*************************************************************
  *                    MACRO DEFINITIONS                      *
- *************************************************************/
+ ************************************************************/
 
-#define MAX_CHAR 255
+#define MAX_FILE 50
 #define MAX_CMD 512
+#define MAX_PROCESS 128
 #define MAX_ARGS 16
 
 /*************************************************************
@@ -50,36 +51,39 @@ enum {
 
 /* command strcut */
 struct command {
-    char command[MAX_CMD];		/* the whole command */
-    char *args[MAX_ARGS];		/* arguments of the command */
-    int num_input;			/* number of input redirection */
-    int num_output;			/* number of output redirection */
-    char input_file[MAX_ARGS][MAX_CMD];	/* the array of the input files */
-    char output_file[MAX_ARGS][MAX_CMD];/* the array of the output files */
-    int num_args;			/* number of arguments in the command line */
+    char command[MAX_CMD];			/* the whole command */
+    char *args[MAX_ARGS];			/* arguments of the command */
+    int num_input;				/* number of input redirection */
+    int num_output;				/* number of output redirection */
+    char input_file[MAX_ARGS][MAX_FILE];	/* the array of the input files */
+    char output_file[MAX_ARGS][MAX_FILE];	/* the array of the output files */
+    int num_args;				/* number of arguments in the command line */
+    struct command *next_command;		/* the comamnd for pipeling */
 };
 
 /* job struct */
 struct job {
-    char commandline[MAX_CMD];		/* the total command line */
-    struct command processes[MAX_CMD];	/* a job contains one or more commands */
-    int num_commands;			/* number of commands/processes */
+    char commandline[MAX_CMD];			/* the total command line */
+    struct command *first_command;		/* the first command of a job */
+    int num_processes;				/* the number of commands/processes */
 };
 
 /*************************************************************
  *                    LOCAL FUNCTION PROTOTYPES              *
  *************************************************************/
 
-char find_closest_occurence(char *array, const char *delim);
+void insert_command(struct command **root, struct command *cmd);
 void read_job(struct job *job);
-void read_command(struct command *cmd);
+struct command* read_command(char *command);
+void pipeline(struct command *cmd, int fd[2], int *status_array);
+void free_job(struct job *job);
 void free_command(struct command *cmd);
 int is_valid_command(const struct command cmd);
-int is_builtin_command(const struct command cmd);
+int is_builtin_command(const struct command *cmd);
 int cd(const char *dir);
 int pwd();
-void redirection(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files);
-int check_redirection_file(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files);
+void redirection(const struct command *cmd);
+int check_redirection_file(struct command *cmd);
 void error_message(int error_code);
 
 /*************************************************************
@@ -87,54 +91,77 @@ void error_message(int error_code);
  *************************************************************/
 
 /*
- * This function reads the whole command line from terminal and store each command
+ * This function inserts the command at the end of the job list
+ * @param - {command **} - the root of the job 
+ * 	  - {command *} - the command to be inserted
+ * @return - none
+ */
+void insert_command(struct command **root, struct command *cmd) {
+    /* the job list is empty */
+    if(*root == NULL) {
+        *root = cmd;
+    } else {
+        struct command *node = *root;
+        /* this will find last node of of the job list */
+        while(node->next_command) {
+            node = node->next_command;
+        }
+        /* insert the command to the end */
+        node->next_command = cmd;
+    }
+    return;
+}
+
+/*
+ * This function reads the whole command line from terminal and store each command as a linked list
  * @param - {job *} - the job to store one or more commands (pipeline) 
  * @return - none
  */
 void read_job(struct job *job) {
     char commands[MAX_CMD];
-   // char command[MAX_CMD];
     char *token;
+    struct command *cmd;
 
+    job->num_processes = 0;			/* initialize number of processes */
     fgets(commands, MAX_CMD, stdin);		/* get the entire command line */
     commands[strlen(commands) - 1] = 0;		/* get rid of newline */
-    job->num_commands = 0;			/* initialize number of command */
+    strcpy(job->commandline, commands);		/* store the whole command line */
 
     token = strtok(commands, "|");		/* get the first command */
-    if(token == NULL) {				/* only one or zero command */
-    	if(commands[0] != 0) {			/* one command */
-	    read_command(&(job->processes[0]));
-	} else {				/* no command */
-            //job->processes[0] = NULL;	
-	}
+    if(token == NULL) {		    		/* no command */
+	job->first_command = NULL; 
+	return;
     }
-    while(token != NULL) {
-	read_command(&(job->processes[job->num_commands++]));
-	token = strtok(NULL, "|");	
+    
+    while(token != NULL) {			/* one command or more */
+	cmd = read_command(token);
+	insert_command(&job->first_command, cmd);
+	job->num_processes++;
+	token = strtok(NULL, "|");
+	cmd = cmd->next_command;	
     }
     return;
 }	
 
 /*
- * This function parses the command and store it
- * @param - {struct *} - the command struct
- *        - {char *} - the command to be parsed
- * @return - none
+ * This function parses the command and store it as a command struct
+ * @param - {char *} - the command to be parsed
+ * @return - {command *} - the command struct
  */
-void read_command(struct command *cmd) {
-    char command[MAX_CMD], arg[MAX_CMD];
+struct command* read_command(char *command) {
+    char arg[MAX_CMD];
     int num_white_space;
-
-    fgets(command, MAX_CMD, stdin);		/* get the argument list for the command */
-    command[strlen(command) - 1] = 0;		/* get rid of newline */
+    
+    struct command* cmd = (struct command*) malloc(sizeof(struct command));     /* allocate space for comamnd */
     cmd->num_args = 0;				/* initialize number of arguments */
     cmd->num_input = 0;				/* initialize number of input redirections */
     cmd->num_output = 0;			/* initialize number of output redirections */
+    cmd->next_command = NULL;			/* next command initializes to null */
     strcpy(cmd->command, command);		/* store command line */
     
     /* get rid of leading spaces */
     for(num_white_space = 0; command[num_white_space] == ' '; num_white_space++);
-    strcpy(command, command + num_white_space);
+    command = command + num_white_space;
 
     /* get rid of trailing spaces */
     int i;
@@ -199,12 +226,87 @@ void read_command(struct command *cmd) {
     }
     
     cmd->args[cmd->num_args] = NULL;		/* set null terminator */
+    return cmd;
+}
+
+/*
+ * This function pipelines the commands: replace the new processes input stream with the old one from that pipe
+ * @param - {command *} - the pipeline commands
+ * 	  - {int [2]} - old input file descriptor and stdout
+ * 	  - {int *} - store the return status
+ * @return - none
+ */
+void pipeline(struct command *cmd, int fd[2], int *status_array) {
+    int builtin_command_code, status;
+    
+    /* check if it is a built in command */
+    builtin_command_code = is_builtin_command(cmd);
+
+    /* check if it is builtin command */
+    if(builtin_command_code == EXIT) {          /* leave the shell */
+	fprintf(stderr, "Bye...\n");
+	exit(EXIT_SUCCESS);
+    }
+    else if(builtin_command_code == CD) {       /* run cd command */
+	status = cd(cmd->args[1]);
+
+    } else if(builtin_command_code == PWD) {    /* run pwd command */
+	status = pwd();
+    }
+
+    /* last command of the pipeline */
+    if(fork() == 0) {
+	/* child */
+        dup2(fd[0], STDIN_FILENO);	/* replace new read stream with old read stream */ 
+	close(fd[0]);
+
+	/* if it is the last command, replace stdout back */
+	if(cmd->next_command == NULL) {
+	    dup2(fd[1], STDOUT_FILENO);
+	    close(fd[1]);
+	}
+
+	/* perform redirections */
+        redirection(cmd);
+        if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
+	    execvp(cmd->args[0], cmd->args);
+            /* execvp error */
+            error_message(ERR_CMD_NOTFOUND);
+            exit(EXIT_FAILURE);
+        } else {                                        /* builtin command */
+            exit(status);
+        }
+    } else {
+	/* parent */
+    	waitpid(-1, status_array, 0);                /* wait for child to complete */
+	if(cmd->next_command) {
+	    pipeline(cmd->next_command, fd, status_array + 1);
+	}
+    }
+}
+
+/*
+ * This function frees the memory allocated for the job struct
+ * @param - {job *} - the job struct
+ * @return - none
+ */
+void free_job(struct job *job) {
+    struct command *node;
+    struct command *head = job->first_command;	/* initializes the head of the job list */
+
+    while(head != NULL) {
+    	node = head;				/* get the current node at the top of the job list */
+	head = head->next_command;		/* iterate to next node of the job list */
+	free_command(node);			/* free the command */
+	free(node);				/* free the node */
+    }
+    free(job);
     return;
 }
 
 /*
  * This function frees the memory allocated for the arguments in the command line struct
- * @param - {struct *} - the command line struct
+ * @param - {command *} - the command line struct
  * @return - none
  */
 void free_command(struct command *cmd) {
@@ -217,7 +319,7 @@ void free_command(struct command *cmd) {
 
 /* TO DO !!!
  * This function check if the command line is valid
- * @param - {const struct} - the command line struct
+ * @param - {command *} - the command line struct
  * @return - {int} - error code
  */
 int is_valid_command(const struct command cmd) {
@@ -226,15 +328,15 @@ int is_valid_command(const struct command cmd) {
 
 /*
  * This function check if the command line is a builtin command
- * @param - {const struct} - the command line struct
+ * @param - {command *} - the command line struct
  * @return - {int} - builtin command enum
  */
-int is_builtin_command(const struct command cmd) {
-    if(strcmp(cmd.args[0], "exit") == 0) {		/* exit */
+int is_builtin_command(const struct command *cmd) {
+    if(strcmp(cmd->args[0], "exit") == 0) {		/* exit */
         return EXIT;
-    } else if(strcmp(cmd.args[0], "cd") == 0) {		/* cd */
+    } else if(strcmp(cmd->args[0], "cd") == 0) {	/* cd */
         return CD;
-    } else if(strcmp(cmd.args[0], "pwd") == 0) {	/* pwd */
+    } else if(strcmp(cmd->args[0], "pwd") == 0) {	/* pwd */
         return PWD;
     } else {
         return NOT_BUILTIN;				/* not a built in command */
@@ -273,21 +375,23 @@ int pwd() {
 
 /*
  * This function handles the input/output redirection and connects according std
- * @param - {int} - indicates if it is for input redirection or output redirection
- *        - {char *[]} - the array of files
- *        - {int} - number of files
+ * @param - {command *} - the command struct that contains the files info
  * @return - none
  */
-void redirection(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files) {
+void redirection(const struct command *cmd) {
     int fd, i;
-    for(i = 0; i < num_files; i++) {
-        if(mode == INPUT) {			
-            fd = open(files[i], O_RDONLY);
-            dup2(fd, STDIN_FILENO);         	/* input redirection */
-        } else {	
-	    fd = open(files[i], O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); /* create the file if not exist */
-	    dup2(fd, STDOUT_FILENO);		/* output redirection */
-        }
+
+    /* input redirection */
+    for(i = 0; i < cmd->num_input; i++) {			
+        fd = open(cmd->input_file[i], O_RDONLY);
+        dup2(fd, STDIN_FILENO);
+	close(fd);				 /* close unused file */
+    }
+
+    /* output redirection */
+    for(i = 0; i < cmd->num_output; i++) {	
+	fd = open(cmd->output_file[i], O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); /* create the file if not exist */
+	dup2(fd, STDOUT_FILENO);
         close(fd);				/* close unused file */
     }
     return;
@@ -295,30 +399,43 @@ void redirection(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files) {
 
 /*
  * This function checks if the input/output file can be opened and if it is given
- * @param - {int} - indicates if it is for input redirection or output redirection
- *        - {char *[]} - the array of files
- *        - {int} - number of files
+ * @param - {command *} - the command struct that contains the files info
  * @return - error code
  */
-int check_redirection_file(int mode, const char files[MAX_ARGS][MAX_CMD], int num_files) {
+int check_redirection_file(struct command *cmd) {
     int i;
-    for(i = 0; i < num_files; i++) {
-        /* check if the file name is given */
-        if(strcmp(files[i], " ") == 0) {
-            return (mode == INPUT) ? ERR_NO_INPUTFILE : ERR_NO_OUTPUTFILE;
-        }
-    
-        /* check if the file can be opened */
-        if(mode == INPUT) {		/* input redirection */
-            if(open(files[i], O_RDONLY) < 0) {		/* error opening file for reading */
-                return ERR_OPEN_INPUTFILE;
+    struct command *node = cmd;
+
+    /* check all the pipeline commands */ 
+    while(node != NULL) {
+	/* check input files */
+	for(i = 0; i < node->num_input; i++) {
+	    /* check if the file name is given */
+	    if(strcmp(node->input_file[i], " ") == 0) {
+		return ERR_NO_INPUTFILE;
 	    }
-        } else {					/* output redirection */
+	
+	    /* check if the file can be opened */
+	    if(open(node->input_file[i], O_RDONLY) < 0) {  	/* error opening file for reading */
+		return ERR_OPEN_INPUTFILE;
+	    } 
+	}    
+	    
+	/* check output files */
+	for(i = 0; i < node->num_output; i++) {
+	    /* check if the file name is given */
+	    if(strcmp(node->output_file[i], " ") == 0) {
+		return ERR_NO_OUTPUTFILE;
+	    }
+
 	    /* file exists but file doesn't allow access */
-            if(access(files[i], F_OK) == 0 && access(files[i], W_OK) < 0) {
-                return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
+	    if(access(node->output_file[i], F_OK) == 0 && access(node->output_file[i], W_OK) < 0) {
+		return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
 	    }
-        }
+        }	
+	
+	/* get next command */
+	node = node->next_command;
     }
     return SUCCESS;
 }
@@ -372,87 +489,104 @@ void error_message(int error_code) {
 int main(int argc, char *argv[])
 {	
     pid_t pid;
+    int status_array[MAX_PROCESS];
     int status;
+    struct command *cmd;
+    struct job *job;
 
     while(1) {
-        struct command cmd;
-//	struct job job;
-	int builtin_command_code;
+	memset(status_array, 0, MAX_PROCESS * sizeof(int));			/* clear previous status arrays */
+        job = (struct job*) malloc(sizeof(struct job)); /* allocate space for job struct */
+	int builtin_command_code, error_code;
 
 	printf("sshell$ ");		/* Display prompt */
-//	read_job(&job);			/* read the job */
-	read_command(&cmd);		/* read command from stdin */
-
-	/* no command is entered */
-	if(cmd.args[0] == NULL) {
-	    continue;
-	} 
+	read_job(job);			/* read the job */
+	cmd = job->first_command;	/* initializes first command */
 	
-	/* check if it is a built in command */
+	/* no command is entered */
+	if(cmd == NULL) {
+    	    continue;
+	} 
+
+	/* check if input/output redirection has errors */
+        error_code = check_redirection_file(cmd);
+        if(error_code != SUCCESS) {
+            error_message(error_code);
+            continue;
+    	}
+
 	builtin_command_code = is_builtin_command(cmd);
-
-	/* check if it has input redirection */
-        if(cmd.num_input > 0) {
-	    /* check if it has errors */
-	    int error_code = check_redirection_file(INPUT, cmd.input_file, cmd.num_input);
-	    if(error_code != SUCCESS) {
-                error_message(error_code);
-		continue;
-            }
-	}
-
-	/* check if it has output redirection */
-        if(cmd.num_output > 0) {
-            /* check if it has errors */
-            int error_code = check_redirection_file(OUTPUT, cmd.output_file, cmd.num_output);
-            if(error_code != SUCCESS) {
-                error_message(error_code);
-                continue;
-            }
-        }
-
-	/* check if it is builtin command */
-        if(builtin_command_code == EXIT) {          /* leave the shell */
+        if(builtin_command_code == EXIT) {
             fprintf(stderr, "Bye...\n");
             exit(EXIT_SUCCESS);
         }
-        else if(builtin_command_code == CD) {    /* run cd command */
-            status = cd(cmd.args[1]);
+        else if(builtin_command_code == CD) {
+            status = cd(cmd->args[1]);
 
         } else if(builtin_command_code == PWD) {    /* run pwd command */
             status = pwd();
         }
-
-	/* run not-built-in command */
-	pid = fork();			/* fork child process */
-	if(pid == 0) {			/* Child */
-	    /* perform input redirection */
-	    if(cmd.num_input > 0) {
-                redirection(INPUT, cmd.input_file, cmd.num_input);
-            } 
-	    
-	    /* perform output redirection */
-	    if(cmd.num_output > 0) {
-                redirection(OUTPUT, cmd.output_file, cmd.num_output);
+	
+        if(cmd->next_command == NULL) {	
+	    /* run not-built-in command */
+	    pid = fork();			/* fork child process */
+	    if(pid == 0) {			/* child */
+		/* perform redirections */
+		redirection(cmd);
+		
+		if(builtin_command_code == NOT_BUILTIN) {	/* not builtin command */
+		    execvp(cmd->args[0], cmd->args);		
+		    /* execvp error */
+		    error_message(ERR_CMD_NOTFOUND);
+		    exit(EXIT_FAILURE);
+		} else {					/* builtin command */
+		    exit(status);
+		}
+	    } else if(pid > 0) {		/* parent */
+		waitpid(-1, &status, 0);		/* wait for child to complete */
+		/* Information message after execution */
+		fprintf(stderr, "+ completed '%s' [%d]\n", job->commandline, WEXITSTATUS(status));	
+	    } else {				/* fork error */ 
+		perror("fork");	
+		exit(EXIT_FAILURE);
 	    }
+	} else {
+	    int fd[2];
+            pipe(fd);                           /* create pipe */
+            int std_out = dup(STDOUT_FILENO);
+	    dup2(fd[1], STDOUT_FILENO);         /* replace stdout with the pipe */
+	    close(fd[1]);			/* close unused file */
+	    fd[1] = std_out;
 	    
-	    if(builtin_command_code == NOT_BUILTIN) {	/* not builtin command */
-	        execvp(cmd.args[0], cmd.args);		
-	        /* execvp error */
-	        error_message(ERR_CMD_NOTFOUND);
-	        exit(EXIT_FAILURE);
-	    } else {					/* builtin command */
-                exit(status);
-            }
-	} else if(pid > 0) {		/* Parent */
-	    waitpid(-1, &status, 0);		/* wait for child to complete */
-	    /* Information message after execution */
-	    fprintf(stderr, "+ completed '%s' [%d]\n", cmd.command, WEXITSTATUS(status));
-	} else {			/* fork error */
-	    perror("fork");	
-	    exit(EXIT_FAILURE);
+            if(fork() == 0) {					/* child */
+      	        /* perform redirections */
+                redirection(cmd);
+                
+                if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
+                    execvp(cmd->args[0], cmd->args);
+                    /* execvp error */
+                    error_message(ERR_CMD_NOTFOUND);
+                    exit(EXIT_FAILURE);
+                } else {                                        /* builtin command */
+                    exit(status);
+                }		
+	    } else {						/* parent */
+		waitpid(-1, status_array, 0);                	/* wait for child to complete */
+		pipeline(cmd->next_command, fd, status_array + 1);	/* pipeline the commands */
+		
+		/* Information message after execution */
+		int i;
+		fprintf(stderr, "+ completed '%s' ", job->commandline);
+		for(i = 0; i < job->num_processes; i++) {
+		    fprintf(stderr, "[%d]", WEXITSTATUS(status_array[i]));
+		}	
+		fprintf(stderr, "\n");
+	
+		/* replace back stdout */
+		dup2(std_out, STDOUT_FILENO);
+		close(std_out);
+	    }
 	}
-	free_command(&cmd);		/* free the memory allocated for the command line */
     }
     return EXIT_SUCCESS;
 }
