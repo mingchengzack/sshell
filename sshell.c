@@ -51,6 +51,8 @@ enum {
 
 /* command strcut */
 struct command {
+    pid_t pid;					/* the process id */
+    int status;					/* exit status */
     char command[MAX_CMD];			/* the whole command */
     char *args[MAX_ARGS];			/* arguments of the command */
     int num_input;				/* number of input redirection */
@@ -72,10 +74,11 @@ struct job {
  *                    LOCAL FUNCTION PROTOTYPES              *
  *************************************************************/
 
+void insert_status(struct command **root, pid_t pid, int status);
 void insert_command(struct command **root, struct command *cmd);
 void read_job(struct job *job);
 struct command* read_command(char *command);
-void pipeline(struct command *cmd, int fd[2], int *status_array);
+void pipeline(struct command *cmd, int fd[2]);
 void free_job(struct job *job);
 void free_command(struct command *cmd);
 int is_empty_command(char *cmd);
@@ -111,6 +114,28 @@ void insert_command(struct command **root, struct command *cmd) {
         /* insert the command to the end */
         node->next_command = cmd;
     }
+    return;
+}
+
+/*
+ * This function checks if the command has the same id, if so add status to it
+ * @param - {pid_t} - the id to find 
+ *        - {int} - the exit status of that pid
+ * @return - none
+ */
+void insert_status(struct command **root, pid_t pid, int status) {
+    /* the job list is empty */
+    if(*root == NULL) {
+        return;
+    } else {
+	struct command *node = *root;
+        /* this will find node tha has the pid */
+        while(node->next_command && node->pid != pid) {
+            node = node->next_command;
+        }
+        /* insert the status to the node */
+        node->status = status;
+    } 
     return;
 }
 
@@ -242,12 +267,13 @@ struct command* read_command(char *command) {
  * This function pipelines the commands: connects the old's reading stream and creates new pipe for next process
  * @param - {command *} - the pipeline commands
  * 	  - {int [2]} - old pipe
- * 	  - {int *} - store the return status
+ *
  * @return - none
  */
-void pipeline(struct command *cmd, int fd[2], int *status_array) {
+void pipeline(struct command *cmd, int fd[2]) {
     int builtin_command_code, status;
     int new_fd[2];
+    pid_t pid;
 	
     /* creates new pipe */
     pipe(new_fd);
@@ -267,8 +293,10 @@ void pipeline(struct command *cmd, int fd[2], int *status_array) {
 	status = pwd();
     }
 
+    pid = fork();
+    cmd->pid = pid;
     /* last command of the pipeline */
-    if(fork() == 0) {
+    if(pid == 0) {
 	/* child */
         dup2(fd[0], STDIN_FILENO);	/* replace new read stream with old read stream */ 
 	close(fd[0]);			/* close unnecessary files */
@@ -292,13 +320,12 @@ void pipeline(struct command *cmd, int fd[2], int *status_array) {
 	    close(new_fd[1]);
             exit(status);
         }
-    } else {
+    } else if(pid > 0) {
 	/* parent */
 	close(fd[0]);				     /* closing unnecessary files */
 	close(new_fd[1]);			     /* closing unnecessary files */
-    	waitpid(-1, status_array, 0);                /* wait for child to complete */
 	if(cmd->next_command) {
-	    pipeline(cmd->next_command, new_fd, status_array + 1);
+	    pipeline(cmd->next_command, new_fd);
 	} else {
             close(new_fd[0]);
 	}
@@ -387,7 +414,7 @@ int check_job(struct job *job) {
 	/* check mislocated redirection errors */
 	if(i != 0 && cmd->num_input > 0)
 	    return ERR_INPUT_MISLOCATED;
-	if(i != job->num_processes && cmd->num_output > 0)
+	if(i != job->num_processes - 1 && cmd->num_output > 0)
 	    return ERR_OUTPUT_MISLOCATED;
 
 	/* get next command */
@@ -605,7 +632,7 @@ int main(int argc, char *argv[])
 		    exit(status);
 		}
 	    } else if(pid > 0) {		/* parent */
-		waitpid(-1, &status, 0);		/* wait for child to complete */
+		wait(&status);		/* wait for child to complete */
 		/* Information message after execution */
 		fprintf(stderr, "+ completed '%s' [%d]\n", job->commandline, WEXITSTATUS(status));	
 	    } else {				/* fork error */ 
@@ -617,6 +644,7 @@ int main(int argc, char *argv[])
             pipe(fd);                           /* create pipe */
             
 	    pid = fork();
+	    cmd->pid = pid;
             if(pid == 0) {					/* child */    
                 close(fd[0]);
 		if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
@@ -637,14 +665,22 @@ int main(int argc, char *argv[])
                 }		
 	    } else if(pid > 0) {				/* parent */
 		close(fd[1]);					/* close out unnessary files */
-		waitpid(-1, status_array, 0);                	/* wait for child to complete */
-		pipeline(cmd->next_command, fd, status_array + 1);	/* pipeline the commands */
-		
-		/* Information message after execution */
+		pipeline(cmd->next_command, fd);		/* pipeline the commands */
+		//wait(status_array);
+
 		int i;
+		pid_t id;
+		/* wait for any child processes */
+		for(i = 0; i < job->num_processes; i++) {
+		    id = wait(&status);
+		    insert_status(&(job->first_command), id, status);  
+		}
+
+		/* Information message after execution */
 		fprintf(stderr, "+ completed '%s' ", job->commandline);
 		for(i = 0; i < job->num_processes; i++) {
-		    fprintf(stderr, "[%d]", WEXITSTATUS(status_array[i]));
+		    fprintf(stderr, "[%d]", WEXITSTATUS(cmd->status));
+		    cmd = cmd->next_command;
 		}	
 		fprintf(stderr, "\n");
 	    } else {						/* fork error */
