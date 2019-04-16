@@ -78,7 +78,9 @@ struct command* read_command(char *command);
 void pipeline(struct command *cmd, int fd[2], int *status_array);
 void free_job(struct job *job);
 void free_command(struct command *cmd);
-int is_valid_command(const struct command cmd);
+int is_empty_command(char *cmd);
+int is_valid_command(struct command *cmd);
+int check_job(struct job *job);
 int is_builtin_command(const struct command *cmd);
 int cd(const char *dir);
 int pwd();
@@ -121,22 +123,28 @@ void read_job(struct job *job) {
     char commands[MAX_CMD];
     char *token;
     struct command *cmd;
-
-    job->num_processes = 0;			/* initialize number of processes */
+  
+    job->num_processes = 1;			/* initialize number of processes */
     fgets(commands, MAX_CMD, stdin);		/* get the entire command line */
     commands[strlen(commands) - 1] = 0;		/* get rid of newline */
     strcpy(job->commandline, commands);		/* store the whole command line */
-
-    token = strtok(commands, "|");		/* get the first command */
-    if(token == NULL) {		    		/* no command */
-	job->first_command = NULL; 
-	return;
+    
+    /* find number of processes */
+    int i;
+    for(i = 0; i < strlen(commands); i++) {
+        if(commands[i] == '|')
+	    job->num_processes++;
     }
     
+    token = strtok(commands, "|");		/* get the first command */
+    if(token == NULL) {		    		/* no command */
+	job->first_command = NULL;
+	return;
+    }
+   
     while(token != NULL) {			/* one command or more */
 	cmd = read_command(token);
 	insert_command(&job->first_command, cmd);
-	job->num_processes++;
 	token = strtok(NULL, "|");
 	cmd = cmd->next_command;	
     }
@@ -157,8 +165,7 @@ struct command* read_command(char *command) {
     cmd->num_input = 0;				/* initialize number of input redirections */
     cmd->num_output = 0;			/* initialize number of output redirections */
     cmd->next_command = NULL;			/* next command initializes to null */
-    strcpy(cmd->command, command);		/* store command line */
-    
+  
     /* get rid of leading spaces */
     for(num_white_space = 0; command[num_white_space] == ' '; num_white_space++);
     command = command + num_white_space;
@@ -167,6 +174,8 @@ struct command* read_command(char *command) {
     int i;
     for(i = strlen(command) - 1; i >= 0 && command[i] == ' '; i--)
         command[i] = 0;
+    
+    strcpy(cmd->command, command);              /* store command line */
 
     /* parse the command */
     int read_code = ARGUMENT;
@@ -239,7 +248,7 @@ struct command* read_command(char *command) {
 void pipeline(struct command *cmd, int fd[2], int *status_array) {
     int builtin_command_code, status;
     int new_fd[2];
-
+	
     /* creates new pipe */
     pipe(new_fd);
 
@@ -265,29 +274,33 @@ void pipeline(struct command *cmd, int fd[2], int *status_array) {
 	close(fd[0]);			/* close unnecessary files */
 
         if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
-    	    if(cmd->next_command != NULL) {
+    	    close(new_fd[0]);				/* closing unnecessary files */
+	    if(cmd->next_command != NULL) {
                 dup2(new_fd[1], STDOUT_FILENO);
-	    } else {
-                close(new_fd[0]);
-	    }
-	    close(new_fd[1]);
+	    } 
+	    close(new_fd[1]);				/* closing unnecessary files */
 	    
 	    /* perform redirections */
             redirection(cmd);
-	    
+
 	    execvp(cmd->args[0], cmd->args);
             /* execvp error */
             error_message(ERR_CMD_NOTFOUND);
             exit(EXIT_FAILURE);
         } else {                                        /* builtin command */
+            close(new_fd[0]);
+	    close(new_fd[1]);
             exit(status);
         }
     } else {
 	/* parent */
+	close(fd[0]);				     /* closing unnecessary files */
+	close(new_fd[1]);			     /* closing unnecessary files */
     	waitpid(-1, status_array, 0);                /* wait for child to complete */
-	close(fd[0]);
 	if(cmd->next_command) {
 	    pipeline(cmd->next_command, new_fd, status_array + 1);
+	} else {
+            close(new_fd[0]);
 	}
     }
 }
@@ -324,13 +337,63 @@ void free_command(struct command *cmd) {
     return;
 }
 
-/* TO DO !!!
+/*
+ * This function checks if the command line is empty store
+ * @param - {char *} - the command line
+ * @return - {int} - one for empty, zero for not empty
+ */
+int is_empty_command(char *cmd) {
+    int num_white_space;
+    for(num_white_space = 0; cmd[num_white_space] == ' '; num_white_space++);
+    return cmd[num_white_space] == 0 ? 1 : 0;
+}
+
+/*
  * This function check if the command line is valid
- * @param - {command *} - the command line struct
+ * @param - {command *} - the command struct
  * @return - {int} - error code
  */
-int is_valid_command(const struct command cmd) {
-    return 0;
+int is_valid_command(struct command *cmd) {
+    if(cmd == NULL || cmd->command[0] == '<' || cmd->command[0] == 0 ||
+        cmd->command[0] == '>' || cmd->command[0] == '|') {
+        return ERR_INVALID_CMDLINE;
+    }
+    return SUCCESS;
+}
+
+/*
+ * This function check if the job is valid
+ * @param - {job *} - the job struct
+ * @return - {int} - error code
+ */
+int check_job(struct job *job) {
+    struct command *cmd = job->first_command;
+    int i, error_code;
+
+    if(job->commandline[0] == '|')
+        return ERR_INVALID_CMDLINE;
+
+    for(i = 0; i < job->num_processes; i++) {
+	/* check valid command error */
+	error_code = is_valid_command(cmd);
+	if(error_code != SUCCESS)
+	    return error_code;
+
+	/* check redirections files error */
+        error_code = check_redirection_file(cmd);
+	if(error_code != SUCCESS)
+            return error_code;
+
+	/* check mislocated redirection errors */
+	if(i != 0 && cmd->num_input > 0)
+	    return ERR_INPUT_MISLOCATED;
+	if(i != job->num_processes && cmd->num_output > 0)
+	    return ERR_OUTPUT_MISLOCATED;
+
+	/* get next command */
+	cmd = cmd->next_command;
+    }
+    return SUCCESS;
 }
 
 /*
@@ -411,38 +474,30 @@ void redirection(const struct command *cmd) {
  */
 int check_redirection_file(struct command *cmd) {
     int i;
-    struct command *node = cmd;
-
-    /* check all the pipeline commands */ 
-    while(node != NULL) {
-	/* check input files */
-	for(i = 0; i < node->num_input; i++) {
-	    /* check if the file name is given */
-	    if(strcmp(node->input_file[i], " ") == 0) {
-		return ERR_NO_INPUTFILE;
-	    }
+    /* check input files */
+    for(i = 0; i < cmd->num_input; i++) {
+        /* check if the file name is given */
+	if(strcmp(cmd->input_file[i], " ") == 0) {
+            return ERR_NO_INPUTFILE;
+	}
 	
-	    /* check if the file can be opened */
-	    if(open(node->input_file[i], O_RDONLY) < 0) {  	/* error opening file for reading */
-		return ERR_OPEN_INPUTFILE;
-	    } 
-	}    
+	/* check if the file can be opened */
+	if(open(cmd->input_file[i], O_RDONLY) < 0) {  	/* error opening file for reading */
+            return ERR_OPEN_INPUTFILE;
+	} 
+     }    
 	    
-	/* check output files */
-	for(i = 0; i < node->num_output; i++) {
-	    /* check if the file name is given */
-	    if(strcmp(node->output_file[i], " ") == 0) {
-		return ERR_NO_OUTPUTFILE;
-	    }
+    /* check output files */
+    for(i = 0; i < cmd->num_output; i++) {
+        /* check if the file name is given */
+	if(strcmp(cmd->output_file[i], " ") == 0) {
+            return ERR_NO_OUTPUTFILE;
+        }
 
-	    /* file exists but file doesn't allow access */
-	    if(access(node->output_file[i], F_OK) == 0 && access(node->output_file[i], W_OK) < 0) {
-		return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
-	    }
-        }	
-	
-	/* get next command */
-	node = node->next_command;
+        /* file exists but file doesn't allow access */
+	if(access(cmd->output_file[i], F_OK) == 0 && access(cmd->output_file[i], W_OK) < 0) {
+	    return ERR_OPEN_OUTPUTFILE;		/* error opening file for writing */
+        }
     }
     return SUCCESS;
 }
@@ -511,12 +566,12 @@ int main(int argc, char *argv[])
 	cmd = job->first_command;	/* initializes first command */
 	
 	/* no command is entered */
-	if(cmd == NULL) {
+	if(is_empty_command(job->commandline)) {
     	    continue;
 	} 
 
 	/* check if input/output redirection has errors */
-        error_code = check_redirection_file(cmd);
+        error_code = check_job(job);
         if(error_code != SUCCESS) {
             error_message(error_code);
             continue;
@@ -534,7 +589,7 @@ int main(int argc, char *argv[])
             status = pwd();
         }
 	
-        if(cmd->next_command == NULL) {	
+        if(cmd->next_command == NULL) {		/* only one command */	
 	    /* run not-built-in command */
 	    pid = fork();			/* fork child process */
 	    if(pid == 0) {			/* child */
@@ -557,12 +612,14 @@ int main(int argc, char *argv[])
 		perror("fork");	
 		exit(EXIT_FAILURE);
 	    }
-	} else {
+	} else {				/* pipeline of commands */
 	    int fd[2];
             pipe(fd);                           /* create pipe */
- 
-            if(fork() == 0) {					/* child */    
-                if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
+            
+	    pid = fork();
+            if(pid == 0) {					/* child */    
+                close(fd[0]);
+		if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
                     dup2(fd[1], STDOUT_FILENO);
 		    close(fd[1]);
 		    
@@ -575,9 +632,10 @@ int main(int argc, char *argv[])
                     error_message(ERR_CMD_NOTFOUND);
                     exit(EXIT_FAILURE);
                 } else {                                        /* builtin command */
+		    close(fd[1]);
                     exit(status);
                 }		
-	    } else {						/* parent */
+	    } else if(pid > 0) {				/* parent */
 		close(fd[1]);					/* close out unnessary files */
 		waitpid(-1, status_array, 0);                	/* wait for child to complete */
 		pipeline(cmd->next_command, fd, status_array + 1);	/* pipeline the commands */
@@ -589,7 +647,9 @@ int main(int argc, char *argv[])
 		    fprintf(stderr, "[%d]", WEXITSTATUS(status_array[i]));
 		}	
 		fprintf(stderr, "\n");
-		
+	    } else {						/* fork error */
+                perror("fork");
+                exit(EXIT_FAILURE);
 	    }
 	}
     }
