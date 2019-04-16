@@ -230,15 +230,19 @@ struct command* read_command(char *command) {
 }
 
 /*
- * This function pipelines the commands: replace the new processes input stream with the old one from that pipe
+ * This function pipelines the commands: connects the old's reading stream and creates new pipe for next process
  * @param - {command *} - the pipeline commands
- * 	  - {int [2]} - old input file descriptor and stdout
+ * 	  - {int [2]} - old pipe
  * 	  - {int *} - store the return status
  * @return - none
  */
 void pipeline(struct command *cmd, int fd[2], int *status_array) {
     int builtin_command_code, status;
-    
+    int new_fd[2];
+
+    /* creates new pipe */
+    pipe(new_fd);
+
     /* check if it is a built in command */
     builtin_command_code = is_builtin_command(cmd);
 
@@ -258,17 +262,19 @@ void pipeline(struct command *cmd, int fd[2], int *status_array) {
     if(fork() == 0) {
 	/* child */
         dup2(fd[0], STDIN_FILENO);	/* replace new read stream with old read stream */ 
-	close(fd[0]);
+	close(fd[0]);			/* close unnecessary files */
 
-	/* if it is the last command, replace stdout back */
-	if(cmd->next_command == NULL) {
-	    dup2(fd[1], STDOUT_FILENO);
-	    close(fd[1]);
-	}
-
-	/* perform redirections */
-        redirection(cmd);
         if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
+    	    if(cmd->next_command != NULL) {
+                dup2(new_fd[1], STDOUT_FILENO);
+	    } else {
+                close(new_fd[0]);
+	    }
+	    close(new_fd[1]);
+	    
+	    /* perform redirections */
+            redirection(cmd);
+	    
 	    execvp(cmd->args[0], cmd->args);
             /* execvp error */
             error_message(ERR_CMD_NOTFOUND);
@@ -279,8 +285,9 @@ void pipeline(struct command *cmd, int fd[2], int *status_array) {
     } else {
 	/* parent */
     	waitpid(-1, status_array, 0);                /* wait for child to complete */
+	close(fd[0]);
 	if(cmd->next_command) {
-	    pipeline(cmd->next_command, fd, status_array + 1);
+	    pipeline(cmd->next_command, new_fd, status_array + 1);
 	}
     }
 }
@@ -553,24 +560,25 @@ int main(int argc, char *argv[])
 	} else {
 	    int fd[2];
             pipe(fd);                           /* create pipe */
-            int std_out = dup(STDOUT_FILENO);
-	    dup2(fd[1], STDOUT_FILENO);         /* replace stdout with the pipe */
-	    close(fd[1]);			/* close unused file */
-	    fd[1] = std_out;
-	    
-            if(fork() == 0) {					/* child */
-      	        /* perform redirections */
-                redirection(cmd);
-                
+ 
+            if(fork() == 0) {					/* child */    
                 if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
-                    execvp(cmd->args[0], cmd->args);
-                    /* execvp error */
+                    dup2(fd[1], STDOUT_FILENO);
+		    close(fd[1]);
+		    
+		    /* perform redirections */
+                    redirection(cmd);
+		    
+		    execvp(cmd->args[0], cmd->args);
+        
+		    /* execvp error */
                     error_message(ERR_CMD_NOTFOUND);
                     exit(EXIT_FAILURE);
                 } else {                                        /* builtin command */
                     exit(status);
                 }		
 	    } else {						/* parent */
+		close(fd[1]);					/* close out unnessary files */
 		waitpid(-1, status_array, 0);                	/* wait for child to complete */
 		pipeline(cmd->next_command, fd, status_array + 1);	/* pipeline the commands */
 		
@@ -581,10 +589,7 @@ int main(int argc, char *argv[])
 		    fprintf(stderr, "[%d]", WEXITSTATUS(status_array[i]));
 		}	
 		fprintf(stderr, "\n");
-	
-		/* replace back stdout */
-		dup2(std_out, STDOUT_FILENO);
-		close(std_out);
+		
 	    }
 	}
     }
