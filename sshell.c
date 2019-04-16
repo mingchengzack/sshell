@@ -715,6 +715,7 @@ int main(int argc, char *argv[])
     struct job *job;
 
     while(1) {
+	int fd[2];
 	job = (struct job*) malloc(sizeof(struct job)); /* allocate space for job struct */
 	int builtin_command_code, error_code;
 
@@ -734,149 +735,102 @@ int main(int argc, char *argv[])
             continue;    
 	}
 
-	insert_job(&first_job, job);
+	insert_job(&first_job, job);			/* insert the job to the job list */
 	builtin_command_code = is_builtin_command(cmd);
-        if(builtin_command_code == EXIT) {
+        if(builtin_command_code == EXIT) {		/* run exit */
             fprintf(stderr, "Bye...\n");
             exit(EXIT_SUCCESS);
         }
-        else if(builtin_command_code == CD) {
+        else if(builtin_command_code == CD) {		/* run cd comamnd */
             status = cd(cmd->args[1]);
 
-        } else if(builtin_command_code == PWD) {    /* run pwd command */
+        } else if(builtin_command_code == PWD) {    	/* run pwd command */
             status = pwd();
         }
-	
-        if(cmd->next_command == NULL) {		/* only one command */	
-	    /* run not-built-in command */
-	    pid = fork();			/* fork child process */
-	    cmd->pid = pid;
-	    if(pid == 0) {			/* child */
+	     
+	if(cmd->next_command != NULL) {   		/* pipelineing */
+	    pipe(fd);
+	}  
+
+	/* run not-built-in command */
+	pid = fork();					/* fork child process */
+	cmd->pid = pid;					/* save pid */
+	if(pid == 0) {					/* child */
+	    if(cmd->next_command != NULL) {     	/* pipelineing */
+		close(fd[0]);				/* close out unnessary files */
+	    }
+
+	    if(builtin_command_code == NOT_BUILTIN) {	/* not builtin command */
+		if(cmd->next_command != NULL) {		/* pipelineing */
+		    dup2(fd[1], STDOUT_FILENO);		/* close out unnessary files */
+		    close(fd[1]);
+		}	
+
 		/* perform redirections */
 		redirection(cmd);
-		
-		if(builtin_command_code == NOT_BUILTIN) {	/* not builtin command */
-		    execvp(cmd->args[0], cmd->args);		
-		    /* execvp error */
-		    error_message(ERR_CMD_NOTFOUND);
-		    exit(EXIT_FAILURE);
-		} else {					/* builtin command */
-		    exit(status);
-		}
-	    } else if(pid > 0) {		/* parent */
-		struct job* node = first_job;
-		pid_t id;
-		int i ;
 
-		/* check backgroun processes */
-                while(node != job) {
-                    for(i = 0; i < node->num_processes; i++) {
-                        id = waitpid(WAIT_ANY, &status, WUNTRACED);
-                        insert_status(&(node->first_command), id, status);
-                    }
-                    node->finish = 1;
-                    node = node->next_job;
-                }
-
-		/* waiting */
-		if(cmd->background == 0) {
-		    /* wait for the child process */
-		    wait(&status);
-		    job->first_command->status = status;
-                    job->finish = 1;
-		} 
-
-		/* Information message after execution */
-                node = first_job;		
-		while(node) {
-                    if(node->finish) {
-                        fprintf(stderr, "+ completed '%s' ", node->commandline);
-                        struct command *cmd_node = node->first_command;
-                        for(i = 0; i < node->num_processes; i++) {
-                            fprintf(stderr, "[%d]", WEXITSTATUS(cmd_node->status));
-                            cmd_node = cmd_node->next_command;
-                        }
-                        fprintf(stderr, "\n");
-                        delete_job(&first_job, node);   /* delete the job if it is finished */
-                    }
-                    node = node->next_job;
-                }
-	    } else {				/* fork error */ 
-		perror("fork");	
+		execvp(cmd->args[0], cmd->args);		
+		/* execvp error */
+		error_message(ERR_CMD_NOTFOUND);
 		exit(EXIT_FAILURE);
+	    } else {					/* builtin command */
+	        /* perform redirections */
+                redirection(cmd);
+
+	        if(cmd->next_command != NULL) {		/* pipelineing */
+		    close(fd[1]);			/* close out unnessary files */
+		}
+		exit(status);
 	    }
-	} else {				/* pipeline of commands */
-	    int fd[2];
-            pipe(fd);                           /* create pipe */
-            
-	    pid = fork();
-	    cmd->pid = pid;
-            if(pid == 0) {					/* child */    
-                close(fd[0]);
-		if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
-                    dup2(fd[1], STDOUT_FILENO);
-		    close(fd[1]);
-		    
-		    /* perform redirections */
-                    redirection(cmd);
-		    
-		    execvp(cmd->args[0], cmd->args);
-        
-		    /* execvp error */
-                    error_message(ERR_CMD_NOTFOUND);
-                    exit(EXIT_FAILURE);
-                } else {                                        /* builtin command */
-		    close(fd[1]);
-                    exit(status);
-                }		
-	    } else if(pid > 0) {				/* parent */
+	} else if(pid > 0) {		/* parent */
+	    int i;
+	    pid_t id;	
+	    struct job* node = first_job;
+	    struct command *last_command = find_last_command(cmd);
+
+	    if(cmd->next_command != NULL) {			/* pipelineing */
 		close(fd[1]);					/* close out unnessary files */
 		pipeline(cmd->next_command, fd);		/* pipeline the commands */
+	    } 
 
-		int i;
-		pid_t id;
-		struct job* node = first_job;
-                struct command *last_command = find_last_command(cmd);
-		
-		/* check backgroun processes */
-                while(node != job) {
-		    for(i = 0; i < node->num_processes; i++) {
-                        id = waitpid(WAIT_ANY, &status, WUNTRACED);
-                        insert_status(&(node->first_command), id, status);
-		    }
-                    node->finish = 1;
-                    node = node->next_job;
-                }
-
-		/* waiting */
-                if(last_command->background == 0) {
-                    /* wait for any child processes */
-                    for(i = 0; i < job->num_processes; i++) {
-                        id = wait(&status);
-                        insert_status(&(job->first_command), id, status);
-                    }
-                    job->finish = 1;
-                }
-		
-		/* Information message after execution */
-                node = first_job;
-                while(node) {
-                    if(node->finish) {
-			fprintf(stderr, "+ completed '%s' ", node->commandline);
-			struct command *cmd_node = node->first_command;
-                        for(i = 0; i < node->num_processes; i++) { 
-			    fprintf(stderr, "[%d]", WEXITSTATUS(cmd_node->status));
-			    cmd_node = cmd_node->next_command;
-			}
-			fprintf(stderr, "\n");
-                        delete_job(&first_job, node);   /* delete the job if it is finished */
-                    }
-                    node = node->next_job;
-                }
-	    } else {						/* fork error */
-                perror("fork");
-                exit(EXIT_FAILURE);
+	    /* check backgroun processes */
+	    while(node != job) {
+		for(i = 0; i < node->num_processes; i++) {
+		    id = waitpid(WAIT_ANY, &status, WUNTRACED);
+		    insert_status(&(node->first_command), id, status);
+		}
+		node->finish = 1;
+		node = node->next_job;
 	    }
+
+	    /* waiting */
+	    if(last_command->background == 0) {
+		/* wait for any child processes */
+		for(i = 0; i < job->num_processes; i++) {
+		    id = wait(&status);
+		    insert_status(&(job->first_command), id, status);
+		}
+		job->finish = 1;
+	    }
+
+	    /* Information message after execution */
+	    node = first_job;		
+	    while(node) {
+		if(node->finish) {
+		    fprintf(stderr, "+ completed '%s' ", node->commandline);
+		    struct command *cmd_node = node->first_command;
+		    for(i = 0; i < node->num_processes; i++) {
+			fprintf(stderr, "[%d]", WEXITSTATUS(cmd_node->status));
+			cmd_node = cmd_node->next_command;
+		    }
+		    fprintf(stderr, "\n");
+		    delete_job(&first_job, node);   /* delete the job if it is finished */
+		}
+		node = node->next_job;
+	    }
+	} else {				/* fork error */ 
+	    perror("fork");	
+	    exit(EXIT_FAILURE);
 	}
     }
     return EXIT_SUCCESS;
