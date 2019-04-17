@@ -25,9 +25,16 @@ enum {
     OUTPUT
 }; 
 
+/* finish code */
+enum {
+    NOT_FINISHED,
+    FINISHED
+};
+
 /* error code enum */
 enum {
     SUCCESS,
+    FAILURE,
     ERR_INVALID_CMDLINE,
     ERR_CMD_NOTFOUND,
     ERR_DIR_NOTFOUND,
@@ -61,6 +68,7 @@ struct command {
     char output_file[MAX_ARGS][MAX_FILE];	/* the array of the output files */
     int num_args;				/* number of arguments in the command line */
     struct command *next_command;		/* the comamnd for pipeling */
+    int finish;					/* finish flag */
     int background;				/* number of background signs */
 };
 
@@ -77,18 +85,21 @@ struct job {
  *                    LOCAL FUNCTION PROTOTYPES              *
  *************************************************************/
 void insert_job(struct job **root, struct job *job);
+void free_job_list(struct job* job_list);
 void delete_job(struct job **root, struct job *job);
 struct command* find_last_command(struct command *cmd);
+int check_finish_job(struct job* job);
 void insert_command(struct command **root, struct command *cmd);
-void insert_status(struct command **root, pid_t pid, int status);
+void insert_status(struct job *job, pid_t pid, int status);
 void read_job(struct job *job);
 struct command* read_command(char *command);
-void pipeline(struct command *cmd, int fd[2]);
+void pipeline(struct command *cmd, int fd[2], struct job* first_job);
 void free_job(struct job *job);
 void free_command(struct command *cmd);
 int is_empty_command(char *cmd);
 int is_valid_command(struct command *cmd);
-int check_redirection_file(struct command *cmd);
+int check_redirection_file(char *file, int mode);
+int check_command(struct command *cmd, int num_processes, int index);
 int check_input_output(struct command *cmd, int num_processes, int index);
 int check_background(struct command *cmd, int num_processes, int index);
 int check_job(struct job *job);
@@ -97,6 +108,7 @@ int cd(const char *dir);
 int pwd();
 void redirection(const struct command *cmd);
 void error_message(int error_code);
+void process_complete_message(struct job **first_job);
 
 /*************************************************************
  *                    LOCAL FUNCTION DEFINITIONS             *
@@ -125,6 +137,22 @@ void insert_job(struct job **root, struct job *job) {
 }
 
 /*
+ * This function deletes the job list
+ * @param - {job **} - the root of the job list
+ * @return - none
+ */
+void free_job_list(struct job* job_list) {
+    struct job *node;
+    struct job *head = job_list;  		/* initializes the head of the job list */
+
+    while(head != NULL) {
+        node = head;                            /* get the current node at the top of the job list */
+        head = head->next_job;                  /* iterate to next node of the job list */
+        free_job(node); 	                /* free the job */
+    }
+}
+
+/*
  * This function deletes node in the job list
  * @param - {job **} - the root of the job list
  *        - {job *} - the job to be deleted
@@ -143,7 +171,7 @@ void delete_job(struct job **root, struct job *job) {
     /* remove the head */
     if(node != NULL && last_command->pid == key_id) {
         *root = node->next_job;		/* change head */
-//	free_job(node);
+	////free_job(node);
 	return;
     }
 
@@ -182,10 +210,25 @@ struct command* find_last_command(struct command *cmd) {
     return node;
 }
 
+/*
+ * This function checks if the job is finished
+ * @param - {job *} - the job
+ * @return - one for finish, zero not finish
+ */
+int check_finish_job(struct job* job) {
+    struct command *cmd = job->first_command;
+    while(cmd) {
+        if(cmd->finish == 0) {	/* one command is not finished */
+	    return NOT_FINISHED;
+	}
+	cmd = cmd->next_command;
+    }
+    return FINISHED;
+}
 
 /*
  * This function inserts the command at the end of the job list
- * @param - {command **} - the root of the job 
+ * @param - {command **} - the head of the job list
  * 	  - {command *} - the command to be inserted
  * @return - none
  */
@@ -207,22 +250,31 @@ void insert_command(struct command **root, struct command *cmd) {
 
 /*
  * This function checks if the command has the same id, if so add status to it
- * @param - {pid_t} - the id to find 
+ * @param - {job *} - the job list
+ *        - {pid_t} - the id to find 
  *        - {int} - the exit status of that pid
  * @return - none
  */
-void insert_status(struct command **root, pid_t pid, int status) {
+void insert_status(struct job *job, pid_t pid, int status) {
     /* the job list is empty */
-    if(*root == NULL) {
+    if(job == NULL) {
         return;
     } else {
-	struct command *node = *root;
-        /* this will find node tha has the pid */
-        while(node->next_command && node->pid != pid) {
-            node = node->next_command;
-        }
-        /* insert the status to the node */
-        node->status = status;
+	struct job *job_node = job;
+	while(job_node) {
+	    struct command *cmd_node = job_node->first_command;
+            /* this will find node tha has the pid */
+            while(cmd_node && cmd_node->pid != pid) {
+                cmd_node = cmd_node->next_command;
+            }
+            /* found it and insert the status to the node */
+	    if(cmd_node) {
+                cmd_node->status = status;
+	        cmd_node->finish = FINISHED;
+	        return;
+	    } 
+	    job_node = job_node->next_job;
+	}
     } 
     return;
 }
@@ -234,14 +286,30 @@ void insert_status(struct command **root, pid_t pid, int status) {
  */
 void read_job(struct job *job) {
     char commands[MAX_CMD];
-    char *token;
+    char *token, *nl;
     struct command *cmd;
   
     job->num_processes = 1;			/* initialize number of processes */
     job->next_job = NULL;
-    job->finish = 0;				/* initializes not finish */
-    fgets(commands, MAX_CMD, stdin);		/* get the entire command line */
-    commands[strlen(commands) - 1] = 0;		/* get rid of newline */
+    job->finish = NOT_FINISHED;			/* initializes not finish */
+    if(fgets(commands, MAX_CMD, stdin) == NULL) {	/* get the entire command line */
+        exit(EXIT_SUCCESS);
+    }
+    /*
+     * Echoes command line to stdout if fgets read from a file and not
+     * the terminal (which is the case with the test script)
+     */
+    if(!isatty(STDIN_FILENO)) {
+        printf("%s", commands);
+        fflush(stdout);
+    }
+    
+    /* Remove trailing newline from command line */
+    nl = strchr(commands, '\n');
+    if (nl) {
+       *nl = '\0';
+    }
+
     strcpy(job->commandline, commands);		/* store the whole command line */
     
     /* find number of processes */
@@ -259,7 +327,7 @@ void read_job(struct job *job) {
    
     while(token != NULL) {			/* one command or more */
 	cmd = read_command(token);
-	insert_command(&job->first_command, cmd);
+	insert_command(&(job->first_command), cmd);
 	token = strtok(NULL, "|");
 	cmd = cmd->next_command;	
     }
@@ -281,7 +349,8 @@ struct command* read_command(char *command) {
     cmd->num_output = 0;			/* initialize number of output redirections */
     cmd->background = 0;			/* initialize number of background signs */
     cmd->next_command = NULL;			/* next command initializes to null */
-  
+    cmd->finish = NOT_FINISHED;			/* initialize not finish command */
+
     /* get rid of leading spaces */
     for(num_white_space = 0; command[num_white_space] == ' '; num_white_space++);
     command = command + num_white_space;
@@ -363,10 +432,10 @@ struct command* read_command(char *command) {
  * This function pipelines the commands: connects the old's reading stream and creates new pipe for next process
  * @param - {command *} - the pipeline commands
  * 	  - {int [2]} - old pipe
- *
+ *	  - {job *} - the first job: to check if there is any active job
  * @return - none
  */
-void pipeline(struct command *cmd, int fd[2]) {
+void pipeline(struct command *cmd, int fd[2], struct job* first_job) {
     int builtin_command_code, status;
     int new_fd[2];
     pid_t pid;
@@ -379,8 +448,13 @@ void pipeline(struct command *cmd, int fd[2]) {
 
     /* check if it is builtin command */
     if(builtin_command_code == EXIT) {          /* leave the shell */
-	fprintf(stderr, "Bye...\n");
-	exit(EXIT_SUCCESS);
+	if(first_job->next_job != NULL) {           /* try to exit while there are active jobs */
+            status = EXIT_FAILURE;
+            error_message(ERR_ACTIVE_JOBS);
+        } else {                                    /* can exit */
+            fprintf(stderr, "Bye...\n");
+            exit(EXIT_SUCCESS);
+        }
     }
     else if(builtin_command_code == CD) {       /* run cd command */
 	status = cd(cmd->args[1]);
@@ -421,7 +495,7 @@ void pipeline(struct command *cmd, int fd[2]) {
 	close(fd[0]);				     /* closing unnecessary files */
 	close(new_fd[1]);			     /* closing unnecessary files */
 	if(cmd->next_command) {
-	    pipeline(cmd->next_command, new_fd);
+	    pipeline(cmd->next_command, new_fd, first_job);
 	} else {
             close(new_fd[0]);
 	}
@@ -443,6 +517,7 @@ void free_job(struct job *job) {
 	free_command(node);			/* free the command */
 	free(node);				/* free the node */
     }
+    free(job);
     return;
 }
 
@@ -487,66 +562,78 @@ int is_valid_command(struct command *cmd) {
 
 /*
  * This function checks if the input/output file can be opened and if it is given
- * @param - {command *} - the command struct that contains the files info
+ * @param - {char *} - the name of the file
+ *        - {int} - check for input or output
  * @return - error code
  */
-int check_redirection_file(struct command *cmd) {
-    int i;
+int check_redirection_file(char *file, int mode) {
+    int fd;
     /* check input files */
-    for(i = 0; i < cmd->num_input; i++) {
+    if(mode == INPUT) {
         /* check if the file name is given */
-        if(strcmp(cmd->input_file[i], " ") == 0) {
+        if(strcmp(file, " ") == 0) {
             return ERR_NO_INPUTFILE;
         }
 
         /* check if the file can be opened */
-        if(open(cmd->input_file[i], O_RDONLY) < 0) {    /* error opening file for reading */
+        fd = open(file, O_RDONLY);
+	if(fd < 0) {    /* error opening file for reading */
             return ERR_OPEN_INPUTFILE;
         }
-     }
-
-    /* check output files */
-    for(i = 0; i < cmd->num_output; i++) {
+	close(fd);
+     } else {
         /* check if the file name is given */
-        if(strcmp(cmd->output_file[i], " ") == 0) {
+        if(strcmp(file, " ") == 0) {
             return ERR_NO_OUTPUTFILE;
         }
 
         /* file exists but file doesn't allow access */
-        if(access(cmd->output_file[i], F_OK) == 0 && access(cmd->output_file[i], W_OK) < 0) {
+        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+	if(fd < 0) {
             return ERR_OPEN_OUTPUTFILE;         /* error opening file for writing */
         }
+	close(fd);
     }
     return SUCCESS;
 }
 
 /*
- * This function check if the command has mislocated input or output
+ * This function check if the command has redirection file errors or 
+ * 	mislocated input or output or background sign
  * @param - {command *} - the command struct
  *        - {int} - number of total process
  *        - {int} - the index of the command in the job list
  * @return - {int} - error code
  */
-int check_input_output(struct command *cmd, int num_processes, int index) {
-    if(index != 0 && cmd->num_input > 0)
-        return ERR_INPUT_MISLOCATED;
-    if(index != num_processes - 1 && cmd->num_output > 0)
-        return ERR_OUTPUT_MISLOCATED;
-    return SUCCESS;
-}
+int check_command(struct command *cmd, int num_processes, int index) {
+    int i;
+    int input_index = 0, output_index = 0;
+    int error_code;
 
-/*
- * This function check if the command has mislocated background sign
- * @param - {command *} - the command struct
- *        - {int} - number of total process
- *        - {int} - the index of the command in the job list
- * @return - {int} - error code
- */
-int check_background(struct command *cmd, int num_processes, int index) {
-    if(cmd->background > 1)
-        return ERR_BACKGROUND_MISLOCATED;
-    if(cmd->background == 1 && index != num_processes - 1)
-	return ERR_BACKGROUND_MISLOCATED;
+    for(i = 0; i < strlen(cmd->command); i++) {
+	if(cmd->command[i] == '<') {		/* check for input file errors */
+	    if(index != 0) {			/* check for input mislocation */
+	        return ERR_INPUT_MISLOCATED;
+	    }
+	    error_code = check_redirection_file(cmd->input_file[input_index++], INPUT);
+	    if(error_code != SUCCESS) {							/* check input redirection */
+               return error_code;
+	   }
+	} else if(cmd->command[i] == '>') {	/* check for output file errors */
+	    error_code = check_redirection_file(cmd->output_file[output_index++], OUTPUT);/* check output redirection */
+            if(error_code != SUCCESS) {
+                return error_code;
+	    }
+	} else if(cmd->command[i] == '&') {	/* check for background error */
+            if(index != num_processes - 1 || i != strlen(cmd->command) - 1) {	
+	        /* the background can only be the end of the last command */
+		return ERR_BACKGROUND_MISLOCATED;
+	    }
+	}
+    }
+    if(output_index > 0 && index != num_processes - 1) {    /* check for output mislocation */
+        return ERR_OUTPUT_MISLOCATED;
+    }
     return SUCCESS;
 }
 
@@ -559,30 +646,17 @@ int check_job(struct job *job) {
     struct command *cmd = job->first_command;
     int i, error_code;
 
-    if(job->commandline[0] == '|')
-        return ERR_INVALID_CMDLINE;
-
     for(i = 0; i < job->num_processes; i++) {
 	/* check valid command error */
 	error_code = is_valid_command(cmd);
 	if(error_code != SUCCESS)
 	    return error_code;
 	
-	/* check mislocated redirection errors */
-        error_code = check_input_output(cmd, job->num_processes, i);
+	/* check mislocated and redirection errors */
+        error_code = check_command(cmd, job->num_processes, i);
 	if(error_code != SUCCESS)
             return error_code;
-
-	/* check mislocated background sign */
-        error_code = check_background(cmd, job->num_processes, i);
-        if(error_code != SUCCESS)
-            return error_code;
-
-	/* check redirections files error */
-        error_code = check_redirection_file(cmd);
-	if(error_code != SUCCESS)
-            return error_code;
-
+	
 	/* get next command */
 	cmd = cmd->next_command;
     }
@@ -704,10 +778,33 @@ void error_message(int error_code) {
 }
 
 /*
+ * This function prints out any completed process info
+ * @param - {job *} - the job list
+ * @return - none
+ */
+void process_complete_message(struct job **first_job) {
+    /* Information message after execution */
+    struct job *node = *first_job;
+    int i;
+    while(node) {
+        if(node->finish) {
+            fprintf(stderr, "+ completed '%s' ", node->commandline);
+	    struct command *cmd_node = node->first_command;
+	    for(i = 0; i < node->num_processes; i++) {
+		fprintf(stderr, "[%d]", WEXITSTATUS(cmd_node->status));
+		cmd_node = cmd_node->next_command;
+	    }
+	    fprintf(stderr, "\n");
+	    delete_job(first_job, node);   /* delete the job if it is finished */
+	}
+	node = node->next_job;
+    }
+}
+
+/*
  * main function of the sshell
  */
-int main(int argc, char *argv[])
-{	
+int main(int argc, char *argv[]) {	
     pid_t pid;
     int status;
     struct command *cmd;
@@ -720,36 +817,66 @@ int main(int argc, char *argv[])
 	int builtin_command_code, error_code;
 
 	printf("sshell$ ");		/* Display prompt */
+	fflush(stdout);
 	read_job(job);			/* read the job */
 	cmd = job->first_command;	/* initializes first command */
 	
 	/* no command is entered */
 	if(is_empty_command(job->commandline)) {
-    	    continue;
+    	    struct job* node = first_job;
+	    pid_t id;
+	    int i;
+
+	    /* check background processes */
+            while(node) {
+                for(i = 0; i < node->num_processes; i++) {
+                    id = waitpid(WAIT_ANY, &status, WNOHANG);
+                    if(id != NOT_FINISHED) {
+                        insert_status(first_job, id, status);
+                    }
+                }
+                node->finish = check_finish_job(node);
+                node = node->next_job;
+            }
+	    /* print out completed process message */
+            process_complete_message(&first_job);
+	    continue;
 	} 
 
 	/* check if input/output redirection has errors */
-        error_code = check_job(job);
+	error_code = check_job(job);
         if(error_code != SUCCESS) {
             error_message(error_code);
-            continue;    
+	    continue;
 	}
-
+	
 	insert_job(&first_job, job);			/* insert the job to the job list */
 	builtin_command_code = is_builtin_command(cmd);
         if(builtin_command_code == EXIT) {		/* run exit */
-            fprintf(stderr, "Bye...\n");
-            exit(EXIT_SUCCESS);
+           if(first_job->next_job != NULL) {		/* try to exit while there are active jobs */
+		status = EXIT_FAILURE;
+		error_message(ERR_ACTIVE_JOBS);
+	   } else {					/* can exit */
+		fprintf(stderr, "Bye...\n");
+             	
+		free_job_list(first_job);
+	     	break;
+	    }
         }
         else if(builtin_command_code == CD) {		/* run cd comamnd */
             status = cd(cmd->args[1]);
-
+	    if(job->num_processes == 1) {
+                cmd->background = 0;
+	    }
         } else if(builtin_command_code == PWD) {    	/* run pwd command */
-            status = pwd();
+            status = pwd(); 
+	    if(job->num_processes == 1) {
+                cmd->background = 0;
+            }
         }
 	     
 	if(cmd->next_command != NULL) {   		/* pipelineing */
-	    pipe(fd);
+    	    pipe(fd);
 	}  
 
 	/* run not-built-in command */
@@ -790,44 +917,33 @@ int main(int argc, char *argv[])
 
 	    if(cmd->next_command != NULL) {			/* pipelineing */
 		close(fd[1]);					/* close out unnessary files */
-		pipeline(cmd->next_command, fd);		/* pipeline the commands */
+		pipeline(cmd->next_command, fd, first_job);	/* pipeline the commands */
 	    } 
 
-	    /* check backgroun processes */
+	    /* waiting */
+            if(last_command->background == 0) {
+                /* wait for any child processes */
+                while(job->finish != FINISHED) {
+                    id = wait(&status);
+                    insert_status(first_job, id, status);
+		    job->finish = check_finish_job(job);
+                }
+            }
+
+	    /* check background processes */
 	    while(node != job) {
 		for(i = 0; i < node->num_processes; i++) {
-		    id = waitpid(WAIT_ANY, &status, WUNTRACED);
-		    insert_status(&(node->first_command), id, status);
-		}
-		node->finish = 1;
-		node = node->next_job;
-	    }
-
-	    /* waiting */
-	    if(last_command->background == 0) {
-		/* wait for any child processes */
-		for(i = 0; i < job->num_processes; i++) {
-		    id = wait(&status);
-		    insert_status(&(job->first_command), id, status);
-		}
-		job->finish = 1;
-	    }
-
-	    /* Information message after execution */
-	    node = first_job;		
-	    while(node) {
-		if(node->finish) {
-		    fprintf(stderr, "+ completed '%s' ", node->commandline);
-		    struct command *cmd_node = node->first_command;
-		    for(i = 0; i < node->num_processes; i++) {
-			fprintf(stderr, "[%d]", WEXITSTATUS(cmd_node->status));
-			cmd_node = cmd_node->next_command;
+		    id = waitpid(WAIT_ANY, &status, WNOHANG);
+		    if(id != NOT_FINISHED) {			/* a process has finished */
+		    	insert_status(first_job, id, status);
 		    }
-		    fprintf(stderr, "\n");
-		    delete_job(&first_job, node);   /* delete the job if it is finished */
 		}
+		node->finish = check_finish_job(node);
 		node = node->next_job;
 	    }
+
+	    /* print out completed process message */
+	    process_complete_message(&first_job);
 	} else {				/* fork error */ 
 	    perror("fork");	
 	    exit(EXIT_FAILURE);
