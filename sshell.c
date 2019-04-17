@@ -171,7 +171,7 @@ void delete_job(struct job **root, struct job *job) {
     /* remove the head */
     if(node != NULL && last_command->pid == key_id) {
         *root = node->next_job;		/* change head */
-	////free_job(node);
+	//free_job(node);
 	return;
     }
 
