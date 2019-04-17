@@ -595,13 +595,14 @@ int is_valid_command(struct command *cmd) {
  */
 int check_redirection_file(char *file, int mode) {
     int fd;
+
+    /* file is not given */
+    if(file == NULL) {
+        return (mode == INPUT) ? ERR_NO_INPUTFILE : ERR_NO_OUTPUTFILE;
+    }
+
     /* check input files */
     if(mode == INPUT) {
-        /* check if the file name is given */
-        if(file == NULL) {
-            return ERR_NO_INPUTFILE;
-        }
-
         /* check if the file can be opened */
         fd = open(file, O_RDONLY);
 	if(fd < 0) {    /* error opening file for reading */
@@ -609,11 +610,6 @@ int check_redirection_file(char *file, int mode) {
         }
 	close(fd);
      } else {
-        /* check if the file name is given */
-        if(strcmp(file, " ") == 0) {
-            return ERR_NO_OUTPUTFILE;
-        }
-
         /* file exists but file doesn't allow access */
         fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
 	if(fd < 0) {
