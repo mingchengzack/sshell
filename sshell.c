@@ -11,7 +11,6 @@
 
 #define MAX_FILE 50
 #define MAX_CMD 512
-#define MAX_PROCESS 128
 #define MAX_ARGS 16
 
 /*************************************************************
@@ -91,7 +90,7 @@ struct command* find_last_command(struct command *cmd);
 int check_finish_job(struct job* job);
 void insert_command(struct command **root, struct command *cmd);
 void insert_status(struct job *job, pid_t pid, int status);
-void read_job(struct job *job);
+struct job *read_job();
 struct command* read_command(char *command);
 void pipeline(struct command *cmd, int fd[2], struct job* first_job);
 void free_job(struct job *job);
@@ -107,6 +106,7 @@ int is_builtin_command(const struct command *cmd);
 int cd(const char *dir);
 int pwd();
 void redirection(const struct command *cmd);
+void check_background_process(struct job *job_start, struct job *job_end);
 void error_message(int error_code);
 void process_complete_message(struct job **first_job);
 
@@ -171,7 +171,7 @@ void delete_job(struct job **root, struct job *job) {
     /* remove the head */
     if(node != NULL && last_command->pid == key_id) {
         *root = node->next_job;		/* change head */
-	//free_job(node);
+//	free_job(node);
 	return;
     }
 
@@ -189,7 +189,7 @@ void delete_job(struct job **root, struct job *job) {
 
     /* delete the node from the job list */
     prev->next_job = node->next_job;
-    //free_job(node);
+  //  free_job(node);
 }
 
 /*
@@ -281,20 +281,24 @@ void insert_status(struct job *job, pid_t pid, int status) {
 
 /*
  * This function reads the whole command line from terminal and store each command as a linked list
- * @param - {job *} - the job to store one or more commands (pipeline) 
- * @return - none
+ * @param - none
+ * @return - {job *} - the stored job
  */
-void read_job(struct job *job) {
+struct job* read_job() {
     char commands[MAX_CMD];
     char *token, *nl;
     struct command *cmd;
   
+    struct job *job = (struct job*) malloc(sizeof(struct job)); /* allocate space for job struct */
     job->num_processes = 1;			/* initialize number of processes */
     job->next_job = NULL;
     job->finish = NOT_FINISHED;			/* initializes not finish */
-    if(fgets(commands, MAX_CMD, stdin) == NULL) {	/* get the entire command line */
-        exit(EXIT_SUCCESS);
+
+    /* get the entire command line */
+    if(fgets(commands, MAX_CMD, stdin) == NULL) {	/* in case we reach EOF */
+        strcpy(commands, "exit\n");
     }
+
     /*
      * Echoes command line to stdout if fgets read from a file and not
      * the terminal (which is the case with the test script)
@@ -322,7 +326,7 @@ void read_job(struct job *job) {
     token = strtok(commands, "|");		/* get the first command */
     if(token == NULL) {		    		/* no command */
 	job->first_command = NULL;
-	return;
+	return job;
     }
    
     while(token != NULL) {			/* one command or more */
@@ -331,7 +335,7 @@ void read_job(struct job *job) {
 	token = strtok(NULL, "|");
 	cmd = cmd->next_command;	
     }
-    return;
+    return job;
 }	
 
 /*
@@ -735,6 +739,34 @@ void redirection(const struct command *cmd) {
 }
 
 /*
+ * This function checks the background processes and adds completed status if completed 
+ * @param - {job *} - the start of the job list
+ * 	  - {job *} - the end of the background processes
+ * @return - none
+ */
+void check_background_process(struct job *job_start, struct job *job_end) {
+    pid_t id;
+    int i, status;
+    struct command *cmd;
+    struct job *job = job_start;
+
+    /* check background processes */
+    while(job != job_end) {
+	cmd = job->first_command;
+	/* check each sub processes */
+	for(i = 0; i < job->num_processes; i++) {
+	    id = waitpid(cmd->pid, &status, WNOHANG);	/* check if that subprocess has completed */
+	    if(id != NOT_FINISHED) {                    	/* a process has finished */
+		insert_status(job_start, id, status);
+	    }
+	    cmd = cmd->next_command;
+	}
+        job->finish = check_finish_job(job);
+        job = job->next_job;
+    }
+}
+
+/*
  * This function prints out according error mesage depending on error code
  * @param - {int} - error code enum
  * @return - none
@@ -813,31 +845,17 @@ int main(int argc, char *argv[]) {
 
     while(1) {
 	int fd[2];
-	job = (struct job*) malloc(sizeof(struct job)); /* allocate space for job struct */
 	int builtin_command_code, error_code;
 
 	printf("sshell$ ");		/* Display prompt */
-	fflush(stdout);
-	read_job(job);			/* read the job */
+	job = read_job();		/* read the job */
 	cmd = job->first_command;	/* initializes first command */
 	
 	/* no command is entered */
 	if(is_empty_command(job->commandline)) {
-    	    struct job* node = first_job;
-	    pid_t id;
-	    int i;
+	    /* check background processes to see if they are completed */
+	    check_background_process(first_job, NULL);
 
-	    /* check background processes */
-            while(node) {
-                for(i = 0; i < node->num_processes; i++) {
-                    id = waitpid(WAIT_ANY, &status, WNOHANG);
-                    if(id != NOT_FINISHED) {
-                        insert_status(first_job, id, status);
-                    }
-                }
-                node->finish = check_finish_job(node);
-                node = node->next_job;
-            }
 	    /* print out completed process message */
             process_complete_message(&first_job);
 	    continue;
@@ -858,7 +876,6 @@ int main(int argc, char *argv[]) {
 		error_message(ERR_ACTIVE_JOBS);
 	   } else {					/* can exit */
 		fprintf(stderr, "Bye...\n");
-             	
 		free_job_list(first_job);
 	     	break;
 	    }
@@ -895,7 +912,7 @@ int main(int argc, char *argv[]) {
 
 		/* perform redirections */
 		redirection(cmd);
-
+	
 		execvp(cmd->args[0], cmd->args);		
 		/* execvp error */
 		error_message(ERR_CMD_NOTFOUND);
@@ -912,7 +929,6 @@ int main(int argc, char *argv[]) {
 	} else if(pid > 0) {		/* parent */
 	    int i;
 	    pid_t id;	
-	    struct job* node = first_job;
 	    struct command *last_command = find_last_command(cmd);
 
 	    if(cmd->next_command != NULL) {			/* pipelineing */
@@ -922,25 +938,18 @@ int main(int argc, char *argv[]) {
 
 	    /* waiting */
             if(last_command->background == 0) {
+		struct command *cmd_node = job->first_command;
                 /* wait for any child processes */
-                while(job->finish != FINISHED) {
-                    id = wait(&status);
-                    insert_status(first_job, id, status);
-		    job->finish = check_finish_job(job);
-                }
+		for(i = 0; i < job->num_processes; i++) {
+		    id = waitpid(cmd_node->pid, &status, WUNTRACED);	/* wait for the child process that has that pid */
+		    insert_status(first_job, id, status);
+		    cmd_node = cmd_node->next_command;
+		}
+		job->finish = check_finish_job(job);
             }
 
-	    /* check background processes */
-	    while(node != job) {
-		for(i = 0; i < node->num_processes; i++) {
-		    id = waitpid(WAIT_ANY, &status, WNOHANG);
-		    if(id != NOT_FINISHED) {			/* a process has finished */
-		    	insert_status(first_job, id, status);
-		    }
-		}
-		node->finish = check_finish_job(node);
-		node = node->next_job;
-	    }
+	    /* check background processes to see if they are completed */
+	    check_background_process(first_job, job);
 
 	    /* print out completed process message */
 	    process_complete_message(&first_job);
