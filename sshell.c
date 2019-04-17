@@ -745,7 +745,7 @@ void redirection(const struct command *cmd) {
  * @return - none
  */
 void check_background_process(struct job *job_start, struct job *job_end) {
-    pid_t id;
+    pid_t pid;
     int i, status;
     struct command *cmd;
     struct job *job = job_start;
@@ -755,9 +755,9 @@ void check_background_process(struct job *job_start, struct job *job_end) {
 	cmd = job->first_command;
 	/* check each sub processes */
 	for(i = 0; i < job->num_processes; i++) {
-	    id = waitpid(cmd->pid, &status, WNOHANG);	/* check if that subprocess has completed */
-	    if(id != NOT_FINISHED) {                    	/* a process has finished */
-		insert_status(job_start, id, status);
+	    pid = waitpid(cmd->pid, &status, WNOHANG);	/* check if that subprocess has completed */
+	    if(pid != NOT_FINISHED) {                    	/* a process has finished */
+		insert_status(job_start, pid, status);
 	    }
 	    cmd = cmd->next_command;
 	}
@@ -816,20 +816,20 @@ void error_message(int error_code) {
  */
 void process_complete_message(struct job **first_job) {
     /* Information message after execution */
-    struct job *node = *first_job;
     int i;
-    while(node) {
-        if(node->finish) {
-            fprintf(stderr, "+ completed '%s' ", node->commandline);
-	    struct command *cmd_node = node->first_command;
-	    for(i = 0; i < node->num_processes; i++) {
+    struct job *job_node = *first_job;
+    while(job_node) {
+        if(job_node->finish) {
+            fprintf(stderr, "+ completed '%s' ", job_node->commandline);
+	    struct command *cmd_node = job_node->first_command;
+	    for(i = 0; i < job_node->num_processes; i++) {
 		fprintf(stderr, "[%d]", WEXITSTATUS(cmd_node->status));
 		cmd_node = cmd_node->next_command;
 	    }
 	    fprintf(stderr, "\n");
-	    delete_job(first_job, node);   /* delete the job if it is finished */
+	    delete_job(first_job, job_node);   /* delete the job if it is finished */
 	}
-	node = node->next_job;
+	job_node = job_node->next_job;
     }
 }
 
@@ -927,8 +927,6 @@ int main(int argc, char *argv[]) {
 		exit(status);
 	    }
 	} else if(pid > 0) {		/* parent */
-	    int i;
-	    pid_t id;	
 	    struct command *last_command = find_last_command(cmd);
 
 	    if(cmd->next_command != NULL) {			/* pipelineing */
@@ -938,14 +936,12 @@ int main(int argc, char *argv[]) {
 
 	    /* waiting */
             if(last_command->background == 0) {
-		struct command *cmd_node = job->first_command;
-                /* wait for any child processes */
-		for(i = 0; i < job->num_processes; i++) {
-		    id = waitpid(cmd_node->pid, &status, WUNTRACED);	/* wait for the child process that has that pid */
-		    insert_status(first_job, id, status);
-		    cmd_node = cmd_node->next_command;
+   		/* wait for any child processes */
+		while(job->finish != FINISHED) {
+		    pid = waitpid(WAIT_ANY, &status, WUNTRACED);	/* wait for any child process */
+		    insert_status(first_job, pid, status);
+		    job->finish = check_finish_job(job);
 		}
-		job->finish = check_finish_job(job);
             }
 
 	    /* check background processes to see if they are completed */
