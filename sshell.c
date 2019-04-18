@@ -87,6 +87,7 @@ struct job_list {
 /*************************************************************
  *                    LOCAL FUNCTION PROTOTYPES              *
  *************************************************************/
+
 void insert_job(struct job **root, struct job *job);
 void free_job_list(struct job_list *job_list);
 void delete_job(struct job **root, struct job *job);
@@ -361,13 +362,15 @@ struct command* read_command(char *command) {
     cmd->next_command = NULL;			/* next command initializes to null */
     cmd->finish = NOT_FINISHED;			/* initialize not finish command */
 
-    /* get rid of leading spaces */
-    for(num_white_space = 0; command[num_white_space] == ' '; num_white_space++);
+    /* get rid of leading spaces and tabs*/
+    for(num_white_space = 0; command[num_white_space] == ' ' || 
+        command[num_white_space] == '\t'; num_white_space++);
     command = command + num_white_space;
 
     /* get rid of trailing spaces */
     int i;
-    for(i = strlen(command) - 1; i >= 0 && command[i] == ' '; i--)
+    for(i = strlen(command) - 1; i >= 0 
+        && (command[i] == ' ' || command[i] == '\t'); i--)
         command[i] = 0;
     
     strcpy(cmd->command, command);              /* store command line */
@@ -386,7 +389,7 @@ struct command* read_command(char *command) {
 	}
 	arg[j] = 0;				/* add null terminator */
 
-        for(; command[i] == ' '; i++);		/* get rid of leading spaces */
+        for(; command[i] == ' ' || command[i] == '\t'; i++);		/* get rid of leading spaces and tabs*/
       
 	switch(read_code) {
             case ARGUMENT:	/* an argument for the program */
@@ -414,18 +417,18 @@ struct command* read_command(char *command) {
 	}
 
 	/* check for redirections */
-	if(command[i] == '<') {			/* read input file for next argument */
+	if(command[i] == '<') {						/* read input file for next argument */
             read_code = INPUT;
             i++;
-            for(; command[i] == ' '; i++);	/* get rid of leading spaces */
-        } else if(command[i] == '>') {		/* read output file for next argument */
+            for(; command[i] == ' ' || command[i] == '\t'; i++);	/* get rid of leading spaces */
+        } else if(command[i] == '>') {					/* read output file for next argument */
             read_code = OUTPUT;
             i++;
-            for(; command[i] == ' '; i++);	/* get rid of leading spaces */
+            for(; command[i] == ' ' || command[i] == '\t'; i++);	/* get rid of leading spaces */
         } else if(command[i] == '&') {
             cmd->background++;
    	    i++;
-   	    for(; command[i] == ' '; i++);      /* get rid of leading spaces */
+   	    for(; command[i] == ' ' || command[i] == '\t'; i++);      	/* get rid of leading spaces */
 	}
     }
     
@@ -963,9 +966,8 @@ int main(int argc, char *argv[]) {
 	    }
 	} else if(pid > 0) {		/* parent */
 	    struct command *last_command = find_last_command(cmd);
-	
-	    if(cmd->next_command != NULL) {			/* pipelineing */
-		close(fd[1]);					/* close out unnessary files */
+	    if(cmd->next_command != NULL) {				/* pipelineing */
+		close(fd[1]);						/* close out unnessary files */
 		pipeline(cmd->next_command, fd, job_list->first_job);	/* pipeline the commands */
 	    } 
 
