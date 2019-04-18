@@ -376,7 +376,7 @@ struct command* read_command(char *command) {
         command[i] = 0;
     }
     
-    strcpy(cmd->command, command);              /* store command line */
+    strcpy(cmd->command, command);      /* store command line */
 
     /* parse the command manually */
     int read_code = ARGUMENT;
@@ -549,7 +549,7 @@ void free_command(struct command *cmd) {
     /* free args space */
     for(i = 0; i < (cmd->num_args); i++) {
        if(cmd->args[i]) { 
-           free(cmd->args[i]);          /* free the allocated memory for each argument */
+           free(cmd->args[i]);                  /* free the allocated memory for each argument */
        }
     }
 
@@ -563,7 +563,7 @@ void free_command(struct command *cmd) {
     /* free output file space */
     for(i = 0; i < (cmd->num_output); i++) {
        if(cmd->output_file[i]) {
-           free(cmd->output_file[i]);       /* free the allocated memory for each file */
+           free(cmd->output_file[i]);           /* free the allocated memory for each file */
        }
     }
     return;
@@ -611,7 +611,7 @@ int check_redirection_file(char *file, int mode) {
     if(mode == INPUT) {
         /* check if the file can be opened */
         fd = open(file, O_RDONLY);
-        if(fd < 0) {    /* error opening file for reading */
+        if(fd < 0) {                                        /* error opening file for reading */
             return ERR_OPEN_INPUTFILE;
         }
         close(fd);
@@ -619,7 +619,7 @@ int check_redirection_file(char *file, int mode) {
         /* file exists but file doesn't allow access */
         fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
         if(fd < 0) {
-            return ERR_OPEN_OUTPUTFILE;         /* error opening file for writing */
+            return ERR_OPEN_OUTPUTFILE;                     /* error opening file for writing */
         }
         close(fd);
     }
@@ -640,8 +640,8 @@ int check_command(struct command *cmd, int num_processes, int index) {
     int error_code;
 
     for(i = 0; i < strlen(cmd->command); i++) {
-        if(cmd->command[i] == '<') {        /* check for input file errors */
-            if(index != 0) {                /* check for input mislocation */
+        if(cmd->command[i] == '<') {                        /* check for input file errors */
+            if(index != 0) {                                /* check for input mislocation */
                 return ERR_INPUT_MISLOCATED;
             }
             /* check input redirection */
@@ -650,14 +650,14 @@ int check_command(struct command *cmd, int num_processes, int index) {
             if(error_code != SUCCESS) {                         
                 return error_code;
             }
-        } else if(cmd->command[i] == '>') { /* check for output file errors */
+        } else if(cmd->command[i] == '>') {                 /* check for output file errors */
             /* check output redirection */
             error_code = check_redirection_file(
                 cmd->output_file[output_index++], OUTPUT);
             if(error_code != SUCCESS) {
                 return error_code;
             }
-        } else if(cmd->command[i] == '&') { /* check for background error */
+        } else if(cmd->command[i] == '&') {                 /* check for background error */
             if(index != num_processes - 1 || 
                 i != strlen(cmd->command) - 1) {   
                 /* the background can only be the end of the last command */
@@ -764,7 +764,7 @@ void redirection(const struct command *cmd) {
         fd = open(cmd->output_file[i], 
             O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR); /* create the file if not exist */
         dup2(fd, STDOUT_FILENO);
-        close(fd);              /* close unused file */
+        close(fd);               /* close unused file */
     }
     return;
 }
@@ -786,7 +786,7 @@ void check_background_process(struct job *job_start, struct job *job_end) {
         cmd = job->first_command;
         /* check each sub processes */
         for(i = 0; i < job->num_processes; i++) {
-            pid = waitpid(cmd->pid, &status, WNOHANG);  /* check if that subprocess has completed */
+            pid = waitpid(cmd->pid, &status, WNOHANG);      /* check if that subprocess has completed */
             if(pid != NOT_FINISHED) {                       /* a process has finished */
                 insert_status(job_start, pid, status);
             }
@@ -879,16 +879,16 @@ int main(int argc, char *argv[]) {
     int status;
     struct command *cmd;
     struct job_list *job_list = (struct job_list*) malloc(sizeof(struct job_list));
-    job_list->first_job = NULL;     /* initialize first job to NULL */
+    job_list->first_job = NULL;                             /* initialize first job to NULL */
 
     while(1) {
         int fd[2];
         int builtin_command_code, error_code;
         struct job *job;
-        printf("sshell$ ");     /* Display prompt */
+        printf("sshell$ ");                                 /* Display prompt */
     
-        job = read_job();       /* read the job */
-        cmd = job->first_command;   /* initializes first command */
+        job = read_job();                                   /* read the job */
+        cmd = job->first_command;                           /* initializes first command */
     
         /* no command is entered */
         if(is_empty_command(job->commandline)) {
@@ -917,43 +917,43 @@ int main(int argc, char *argv[]) {
         insert_job(&(job_list->first_job), job);            /* insert the job to the job list */
     
         builtin_command_code = is_builtin_command(cmd);
-        if(builtin_command_code == EXIT) {      /* run exit */
+        if(builtin_command_code == EXIT) {                  /* run exit */
             if(job_list->first_job->next_job != NULL) {     /* try to exit while there are active jobs */
                 status = EXIT_FAILURE;
                 error_message(ERR_ACTIVE_JOBS);
-            } else {                    /* can exit */
+            } else {                                        /* can exit */
                 fprintf(stderr, "Bye...\n");
                 free_job_list(job_list);
                 break;
             }
         }
-        else if(builtin_command_code == CD) {       /* run cd comamnd */
+        else if(builtin_command_code == CD) {              /* run cd comamnd */
             status = cd(cmd->args[1]);
             if(job->num_processes == 1) {
                 cmd->background = 0;
             }
-        } else if(builtin_command_code == PWD) {        /* run pwd command */
+        } else if(builtin_command_code == PWD) {           /* run pwd command */
             status = pwd(); 
             if(job->num_processes == 1) {
                 cmd->background = 0;
             }
         }
          
-        if(cmd->next_command != NULL) {         /* pipelineing */
+        if(cmd->next_command != NULL) {                    /* pipelineing */
             pipe(fd);
         }  
     
         /* run not-built-in command */
-        pid = fork();                   /* fork child process */
-        cmd->pid = pid;                 /* save pid */
-        if(pid == 0) {                  /* child */
-            if(cmd->next_command != NULL) {         /* pipelineing */
-                close(fd[0]);               /* close out unnessary files */
+        pid = fork();                                      /* fork child process */
+        cmd->pid = pid;                                    /* save pid */
+        if(pid == 0) {                                     /* child */
+            if(cmd->next_command != NULL) {                /* pipelineing */
+                close(fd[0]);                              /* close out unnessary files */
             }
 
-            if(builtin_command_code == NOT_BUILTIN) {   /* not builtin command */
-                if(cmd->next_command != NULL) {     /* pipelineing */
-                    dup2(fd[1], STDOUT_FILENO);     /* close out unnessary files */
+            if(builtin_command_code == NOT_BUILTIN) {      /* not builtin command */
+                if(cmd->next_command != NULL) {            /* pipelineing */
+                    dup2(fd[1], STDOUT_FILENO);            /* close out unnessary files */
                     close(fd[1]);
                 }   
 
@@ -964,27 +964,27 @@ int main(int argc, char *argv[]) {
                 /* execvp error */
                 error_message(ERR_CMD_NOTFOUND);
                 exit(EXIT_FAILURE);
-            } else {                    /* builtin command */
+            } else {                                       /* builtin command */
                 /* perform redirections */
                 redirection(cmd);
 
-                if(cmd->next_command != NULL) {     /* pipelineing */
-                    close(fd[1]);           /* close out unnessary files */
+                if(cmd->next_command != NULL) {            /* pipelineing */
+                    close(fd[1]);                          /* close out unnessary files */
                 }
                 exit(status);
             }
-        } else if(pid > 0) {        /* parent */
+        } else if(pid > 0) {                               /* parent */
             struct command *last_command = find_last_command(cmd);
-            if(cmd->next_command != NULL) {             /* pipelineing */
-                close(fd[1]);                       /* close out unnessary files */
-                pipeline(cmd->next_command, fd, job_list->first_job);   /* pipeline the commands */
+            if(cmd->next_command != NULL) {                              /* pipelineing */
+                close(fd[1]);                                            /* close out unnessary files */
+                pipeline(cmd->next_command, fd, job_list->first_job);    /* pipeline the commands */
             }    
 
             /* waiting */
             if(last_command->background == 0) {
                 /* wait for any child processes */
                 while(job->finish != FINISHED) {
-                    pid = waitpid(WAIT_ANY, &status, WUNTRACED);    /* wait for any child process */
+                    pid = waitpid(WAIT_ANY, &status, WUNTRACED);         /* wait for any child process */
                     insert_status(job_list->first_job, pid, status);
                     job->finish = check_finish_job(job);
                 }
