@@ -47,7 +47,7 @@ enum {
 }; 
 
 /* builtin command code enum */
-enum { 
+enum {
     EXIT,
     CD,
     PWD,
@@ -97,7 +97,7 @@ void insert_command(struct command **root, struct command *cmd);
 void insert_status(struct job *job, pid_t pid, int status);
 struct job *read_job();
 struct command* read_command(char *command);
-void pipeline(struct command *cmd, int fd[2], struct job* first_job);
+void pipeline(struct command *cmd, int fd[2], struct job_list* job_list);
 void free_job(struct job *job);
 void free_command(struct command *cmd);
 int is_empty_command(char *cmd);
@@ -369,7 +369,7 @@ struct command* read_command(char *command) {
     
     command = command + num_white_space;
 
-    /* get rid of trailing spaces */
+    /* get rid of trailing spaces and tabs */
     int i;
     for(i = strlen(command) - 1; i >= 0 
         && (command[i] == ' ' || command[i] == '\t'); i--) {
@@ -423,15 +423,15 @@ struct command* read_command(char *command) {
         if(command[i] == '<') {                                     /* read input file for next argument */
             read_code = INPUT;
             i++;
-            for(; command[i] == ' ' || command[i] == '\t'; i++);    /* get rid of leading spaces */
+            for(; command[i] == ' ' || command[i] == '\t'; i++);    /* get rid of leading spaces tabs */
         } else if(command[i] == '>') {                              /* read output file for next argument */
             read_code = OUTPUT;
             i++;
-            for(; command[i] == ' ' || command[i] == '\t'; i++);    /* get rid of leading spaces */
+            for(; command[i] == ' ' || command[i] == '\t'; i++);    /* get rid of leading spaces and tabs */
         } else if(command[i] == '&') {
             cmd->background++;
             i++;
-            for(; command[i] == ' ' || command[i] == '\t'; i++);    /* get rid of leading spaces */
+            for(; command[i] == ' ' || command[i] == '\t'; i++);    /* get rid of leading spaces and tabs */
         }
     }
     
@@ -450,28 +450,31 @@ struct command* read_command(char *command) {
  * This function pipelines the commands: connects the old's reading stream and creates new pipe for next process
  * @param - {command *} - the pipeline commands
  *    - {int [2]} - old pipe
- *    - {job *} - the first job: to check if there is any active job
+ *    - {job_list *} - the job list: to check if there is any active job
  * @return - none
  */
-void pipeline(struct command *cmd, int fd[2], struct job* first_job) {
+void pipeline(struct command *cmd, int fd[2], struct job_list *job_list) {
     int builtin_command_code, status;
     int new_fd[2];
     pid_t pid;
     
     /* creates new pipe */
-    pipe(new_fd);
+    if(cmd->next_command) {
+        pipe(new_fd);
+    }
 
     /* check if it is a built in command */
     builtin_command_code = is_builtin_command(cmd);
 
     /* check if it is builtin command */
     if(builtin_command_code == EXIT) {                  /* leave the shell */
-        if(first_job->next_job != NULL) {               /* try to exit while there are active jobs */
+        if(job_list->first_job->next_job != NULL) {     /* try to exit while there are active jobs */
             status = EXIT_FAILURE;
             error_message(ERR_ACTIVE_JOBS);
         } else {                                        /* can exit */
             fprintf(stderr, "Bye...\n");
-            exit(EXIT_SUCCESS);
+            free_job_list(job_list);
+     	    exit(EXIT_SUCCESS);
         }
     }
     else if(builtin_command_code == CD) {               /* run cd command */
@@ -490,12 +493,12 @@ void pipeline(struct command *cmd, int fd[2], struct job* first_job) {
         close(fd[0]);                                   /* close unnecessary files */
 
         if(builtin_command_code == NOT_BUILTIN) {       /* not builtin command */
-            close(new_fd[0]);                           /* closing unnecessary files */
-            if(cmd->next_command != NULL) {
+            if(cmd->next_command) {
+		close(new_fd[0]);                       /* closing unnecessary files */
                 dup2(new_fd[1], STDOUT_FILENO);
+		close(new_fd[1]);                       /* closing unnecessary files */
             } 
-            close(new_fd[1]);                           /* closing unnecessary files */
-        
+
             /* perform redirections */
             redirection(cmd);
 
@@ -504,18 +507,18 @@ void pipeline(struct command *cmd, int fd[2], struct job* first_job) {
             error_message(ERR_CMD_NOTFOUND);
             exit(EXIT_FAILURE);
         } else {                                        /* builtin command */
-            close(new_fd[0]);
-            close(new_fd[1]);
+	    if(cmd->next_command) {
+                close(new_fd[0]);                       /* closing unnecessary files */
+                close(new_fd[1]);                       /* closing unnecessary files */
+	    }
             exit(status);
         }
     } else if(pid > 0) {
         /* parent */
         close(fd[0]);                                   /* closing unnecessary files */
-        close(new_fd[1]);                               /* closing unnecessary files */
         if(cmd->next_command) {
-            pipeline(cmd->next_command, new_fd, first_job);
-        } else {
-            close(new_fd[0]);
+	    close(new_fd[1]);                           /* closing unnecessary files */ 
+            pipeline(cmd->next_command, new_fd, job_list);
         }
     }
 }
@@ -850,7 +853,7 @@ void process_complete_message(struct job **first_job) {
     int i;
     struct job *job_node = *first_job;
     while(job_node) {
-        if(job_node->finish) {
+        if(job_node->finish) {              /* print message for all completed processes */
             fprintf(stderr, "+ completed '%s' ", job_node->commandline);
             struct command *cmd_node = job_node->first_command;
             for(i = 0; i < job_node->num_processes; i++) {
@@ -939,7 +942,7 @@ int main(int argc, char *argv[]) {
             }
         }
          
-        if(cmd->next_command != NULL) {                    /* pipelineing */
+        if(cmd->next_command) {                            /* pipelineing */
             pipe(fd);
         }  
     
@@ -947,12 +950,12 @@ int main(int argc, char *argv[]) {
         pid = fork();                                      /* fork child process */
         cmd->pid = pid;                                    /* save pid */
         if(pid == 0) {                                     /* child */
-            if(cmd->next_command != NULL) {                /* pipelineing */
+            if(cmd->next_command) {                        /* pipelineing */
                 close(fd[0]);                              /* close out unnessary files */
             }
 
             if(builtin_command_code == NOT_BUILTIN) {      /* not builtin command */
-                if(cmd->next_command != NULL) {            /* pipelineing */
+                if(cmd->next_command) {                    /* pipelineing */
                     dup2(fd[1], STDOUT_FILENO);            /* close out unnessary files */
                     close(fd[1]);
                 }   
@@ -968,16 +971,16 @@ int main(int argc, char *argv[]) {
                 /* perform redirections */
                 redirection(cmd);
 
-                if(cmd->next_command != NULL) {            /* pipelineing */
+                if(cmd->next_command) {                    /* pipelineing */
                     close(fd[1]);                          /* close out unnessary files */
                 }
                 exit(status);
             }
         } else if(pid > 0) {                               /* parent */
             struct command *last_command = find_last_command(cmd);
-            if(cmd->next_command != NULL) {                              /* pipelineing */
+            if(cmd->next_command) {                                      /* pipelineing */
                 close(fd[1]);                                            /* close out unnessary files */
-                pipeline(cmd->next_command, fd, job_list->first_job);    /* pipeline the commands */
+                pipeline(cmd->next_command, fd, job_list);               /* pipeline the commands */
             }    
 
             /* waiting */
@@ -985,7 +988,7 @@ int main(int argc, char *argv[]) {
                 /* wait for any child processes */
                 while(job->finish != FINISHED) {
                     pid = waitpid(WAIT_ANY, &status, WUNTRACED);         /* wait for any child process */
-                    insert_status(job_list->first_job, pid, status);
+                    insert_status(job_list->first_job, pid, status);     /* store the exit status */
                     job->finish = check_finish_job(job);
                 }
             }
