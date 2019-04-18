@@ -30,10 +30,12 @@
   the exit status for them and mark it as finished. Then at last, we 
   print out the completed message for the process if it is marked finished. 
   Then we repeat the above process until the user enters exit.
+
 # Implementation
-  ## Data Structures
+
+## Data Structures
   We used two linked lists for storing the jobs and commands. We have 
-  a struct called job_list which is a linked list of jobs. A job is a 
+  a struct called job list which is a linked list of jobs. A job is a 
   linked list of commands. The command contains the process id, the 
   command line, the command arguments, input files if any, output files 
   if any, finish flag for completion indication, exit status, number of 
@@ -42,13 +44,13 @@
   number of background  flags. The job contains the whole command line 
   and finish flag to indicate if all commands are finished.
   ## Parsing
-  We have two functions to take care of parsing: read_job() and 
-  read_command(). After fgets, we store the whole command line to the 
+  We have two functions to take care of parsing: readjob() and 
+  readcommand(). After fgets, we store the whole command line to the 
   job, and parse through the command to find the number of processes 
   by finding how many '|' are there (for error checking). Then we use 
   strtok() to seperate the command line into each command as a token 
-  where we use read_command() to manually parse that token. In 
-  read_command(), we first get rid of any leading and trailing spaces 
+  where we use readcommand() to manually parse that token. In 
+  readcommand(), we first get rid of any leading and trailing spaces 
   and tabs. Then we manually parse through it. If we see a space, '<',
   '>' or '&', we stop and handle the string before that terminator. 
   If it's a space, we read that string as an argument for the command. 
@@ -58,9 +60,10 @@
   continue this process until reaches the end of the command. If the 
   flag for reading input or output is still set, that means the input 
   file or output file is not given. We basically set input file or 
-  output_file as NULL for later error checking. We repeat read_command()
+  output file as NULL for later error checking. We repeat readcommand()
   until strtok cannot find any more commands to read.
-  ## Error Checking
+
+## Error Checking
   For all the pre-run errors, we check the errors of a job that is already
   stored from parsing by checking one command at time for that job by 
   parsing that command. If we encounter '<', we check for input mislocation
@@ -98,35 +101,40 @@
   
   **Background Mislocated**: When we go through the commands in the 
   job, we have the index, we simply checks if the index is the last 
-  one and if that background sign is the last character of that command string.
+  one and if that background sign is the last character of that 
+  command string.
   
   **Active Jobs still Running**: We check this error when the user 
   tries to exit. We checks if the job list is empty except for that exit job.
-  ## Built-in Commands
+
+## Built-in Commands
   **CD**: We use chdir() for this function.  
   **PWD**: We use getcwd for this function.  
-  **EXIT**: We simply exit the program if there is no active jobs.  
-  ## Input and Output Redirections
-  **Input Redirection**: For input redirection, we replaces STDIN_FILENO 
-  with that file using dup2. Since there can be more than one input 
-  files, we loop the saved input files and replaces STDIN_FILENO.
+  **EXIT**: We simply exit the program if there is no active jobs.
   
-  **Output Redirection**: Same as above, but we replaces STDOUT_FILENO instead.  
-  ## Pipeline
+## Input and Output Redirections
+  **Input Redirection**: For input redirection, we replaces STDIN FILENO 
+  with that file using dup2. Since there can be more than one input 
+  files, we loop the saved input files and replaces STDIN FILENO.
+  
+  **Output Redirection**: Same as above, but we replaces 
+  STDOUT FILENO instead.  
+  
+## Pipeline
   For checking if we have pipeline commands, I simply check if that job 
   has more commands.  
   
   For doing pipeline, we first creat a pipe in the main function. At the 
-  child process, we use dup2 to replace STDOUT_FILENO with the writing 
+  child process, we use dup2 to replace STDOUT FILENO with the writing 
   portion of the pipe and run that process, then in the parent process 
   we pass the reading portion of the pipe and the next process to the 
   recursive function pipeline(). In pipeline() function, we create a 
   new pipe if there are commands to pipe after this process, and creat 
   a new child process for this process (which is the next process of the 
   previous one before calling pipeline()) and connect the old reading 
-  portion of the pipe to STDIN_FILENO (which should have the input from 
+  portion of the pipe to STDIN FILENO (which should have the input from 
   last process). Then we connect the writing portion of the new pipe 
-  to STDOUT_FILENO in the child process if there is more command to pipe. 
+  to STDOUT FILENO in the child process if there is more command to pipe. 
   Then in the parent process, we continue to call pipeline() and pass 
   the new pipe if there are more commands to pipe. We continue this 
   process until we reach the end of the pipe line. Then the output 

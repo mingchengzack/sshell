@@ -474,6 +474,13 @@ void pipeline(struct command *cmd, int fd[2], struct job_list *job_list) {
         } else {                                        /* can exit */
             fprintf(stderr, "Bye...\n");
             free_job_list(job_list);
+	    
+	    /* close out file */
+	    close(fd[0]);
+	    if(cmd->next_command) {
+	        close(new_fd[0]);
+	        close(new_fd[1]);
+	    }
      	    exit(EXIT_SUCCESS);
         }
     }
@@ -987,7 +994,7 @@ int main(int argc, char *argv[]) {
             if(last_command->background == 0) {
                 /* wait for any child processes */
                 while(job->finish != FINISHED) {
-                    pid = waitpid(WAIT_ANY, &status, WUNTRACED);         /* wait for any child process */
+                    pid = wait(&status);                                 /* wait for any child process */
                     insert_status(job_list->first_job, pid, status);     /* store the exit status */
                     job->finish = check_finish_job(job);
                 }
