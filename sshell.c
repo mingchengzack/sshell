@@ -16,7 +16,7 @@
  *                    STRUCT and ENUM DEFINITIONS             *
  *************************************************************/
 
-/* redirection code */
+/* parsing option code */
 enum {
     ARGUMENT,
     INPUT,
@@ -29,7 +29,7 @@ enum {
     FINISHED
 };
 
-/* error code enum */
+/* error code */
 enum {
     SUCCESS,
     FAILURE,
@@ -81,7 +81,7 @@ struct job {
 
 /* job list struct */
 struct job_list {
-     struct job *first_job;			/* the first job of the job list */
+    struct job *first_job;			/* the first job of the job list */
 };
 
 /*************************************************************
@@ -854,6 +854,10 @@ void process_complete_message(struct job **first_job) {
 	}
     }
 }
+
+/*************************************************************
+ *                       MAIN FUNCTION                       *
+ *************************************************************/
 
 /*
  * main function of the sshell
